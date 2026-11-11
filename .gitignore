@@ -1,0 +1,7 @@
+work/
+dist/
+results/
+artifacts/
+__pycache__/
+*.pem
+!keys/*.pub.pem

@@ -1,0 +1,77 @@
+{
+  "name": "RAST official catalog",
+  "publisher": {
+    "id": "rast",
+    "name": "RAST",
+    "url": "https://github.com/Enricko/rast-packages"
+  },
+  "repository": "https://github.com/Enricko/rast-packages",
+  "keyId": "rast-official-2026-11",
+  "publicKey": "keys/rast-official-2026-11.pub.pem",
+  "minRastVersion": "0.5.0",
+  "expiresDays": 30,
+  "refreshBeforeDays": 10,
+  "allowedHosts": [
+    "dl.google.com",
+    "nodejs.org",
+    "github.com",
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com"
+  ],
+  "targets": {
+    "linux-x86_64": { "runner": "ubuntu-24.04", "go": "amd64", "node": "x64", "python": "x86_64" },
+    "linux-aarch64": { "runner": "ubuntu-24.04-arm", "go": "arm64", "node": "arm64", "python": "aarch64" }
+  },
+  "withheld": [],
+  "revisions": {},
+  "packages": {
+    "python": {
+      "name": "Python",
+      "description": "CPython interpreter with pip, from the python-build-standalone project (relocatable install_only builds).",
+      "homepage": "https://www.python.org",
+      "license": "PSF-2.0",
+      "keepPatches": 1,
+      "channels": [
+        { "id": "3.15", "label": "Python 3.15", "status": "latest" },
+        { "id": "3.14", "label": "Python 3.14", "status": "bugfix" },
+        { "id": "3.13", "label": "Python 3.13", "status": "security fixes" }
+      ]
+    },
+    "php": {
+      "name": "PHP CLI",
+      "description": "Static PHP command-line interpreter built in CI from php.net sources with static-php-cli (musl, no host libraries needed).",
+      "homepage": "https://www.php.net",
+      "license": "PHP-3.01",
+      "keepPatches": 1,
+      "spcVersion": "2.8.5",
+      "builder": "alpine:3.22",
+      "extensions": "bcmath,calendar,ctype,curl,dom,exif,fileinfo,filter,iconv,mbregex,mbstring,openssl,pcntl,pdo,pdo_mysql,pdo_sqlite,phar,posix,readline,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib",
+      "channels": [
+        { "id": "8.5", "label": "PHP 8.5", "status": "active support" },
+        { "id": "8.4", "label": "PHP 8.4", "status": "active support" }
+      ]
+    },
+    "go": {
+      "name": "Go",
+      "description": "The Go toolchain (go, gofmt) from the official go.dev Linux archives.",
+      "homepage": "https://go.dev",
+      "license": "BSD-3-Clause",
+      "keepPatches": 2,
+      "channels": [
+        { "id": "1.27", "label": "Go 1.27", "status": "latest" },
+        { "id": "1.26", "label": "Go 1.26", "status": "supported" }
+      ]
+    },
+    "nodejs": {
+      "name": "Node.js",
+      "description": "Node.js JavaScript runtime with its bundled npm and npx, from the official nodejs.org Linux archives (LTS lines).",
+      "homepage": "https://nodejs.org",
+      "license": "MIT",
+      "keepPatches": 2,
+      "channels": [
+        { "id": "26", "label": "Node.js 26", "status": "LTS" },
+        { "id": "24", "label": "Node.js 24", "status": "maintenance LTS" }
+      ]
+    }
+  }
+}

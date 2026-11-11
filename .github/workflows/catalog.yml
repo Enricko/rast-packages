@@ -1,0 +1,194 @@
+name: catalog
+
+# Discover upstream releases, verify or build them, smoke-test them on native
+# x86_64 and aarch64 runners, then publish a signed catalog. New versions are
+# announced first ("detected", state verifying/building) and only become
+# installable in the final catalog after every check passed.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      withhold:
+        description: "Versions to withhold, comma separated (e.g. go@1.26.11,nodejs@24.22.2)"
+        required: false
+        default: ""
+      force:
+        description: "Re-verify versions that are already in the catalog"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: catalog
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.plan.outputs.changed }}
+      has_new: ${{ steps.plan.outputs.has_new }}
+      has_verify: ${{ steps.plan.outputs.has_verify }}
+      has_php: ${{ steps.plan.outputs.has_php }}
+      verify_matrix: ${{ steps.plan.outputs.verify_matrix }}
+      php_matrix: ${{ steps.plan.outputs.php_matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fetch and verify the published catalog
+        run: python3 scripts/catalog.py previous --out work/previous
+      - name: Discover upstream versions
+        id: plan
+        run: >
+          python3 scripts/catalog.py discover --previous work/previous --out work/plan.json
+          --withhold "${{ inputs.withhold }}" ${{ inputs.force && '--force' || '' }}
+          --github-output "$GITHUB_OUTPUT"
+      - name: Announce new upstream versions (detected, not yet installable)
+        if: steps.plan.outputs.has_new == 'true'
+        env:
+          CATALOG_SIGNING_KEY: ${{ secrets.CATALOG_SIGNING_KEY }}
+        run: |
+          python3 scripts/catalog.py interim --plan work/plan.json --previous work/previous --out work/interim/catalog.json
+          python3 scripts/catalog.py sign work/interim/catalog.json
+          python3 scripts/catalog.py check work/interim/catalog.json --previous work/previous
+          gh release view catalog >/dev/null 2>&1 || gh release create catalog --title "Catalog" \
+            --notes "Signed RAST package catalog (catalog.json + catalog.json.sig). Updated by the catalog workflow." --latest=false
+          # Signature first: a client that races the upload sees an old
+          # signature over new bytes and simply retries at its next check.
+          gh release upload catalog work/interim/catalog.json.sig work/interim/catalog.json --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plan
+          path: |
+            work/plan.json
+            work/previous
+
+  verify:
+    needs: discover
+    if: needs.discover.outputs.has_verify == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.verify_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: plan
+          path: work
+      - name: Download, verify and run upstream artifacts (${{ matrix.target }})
+        run: python3 scripts/catalog.py verify --plan work/plan.json --target ${{ matrix.target }} --out results/upstream-${{ matrix.target }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-upstream-${{ matrix.target }}
+          path: results/
+
+  php:
+    needs: discover
+    if: needs.discover.outputs.has_php == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.php_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: plan
+          path: work
+      - name: Read build inputs
+        id: inputs
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json
+          cfg = json.load(open("catalog.config.json"))["packages"]["php"]
+          item = next(i for i in json.load(open("work/plan.json"))["items"] if i["package"] == "php" and i["version"] == "${{ matrix.version }}")
+          print(f"sha={item['source']['sha256']}")
+          print(f"extensions={cfg['extensions']}")
+          print(f"spc={cfg['spcVersion']}")
+          print(f"builder={cfg['builder']}")
+          EOF
+      - name: Build PHP ${{ matrix.version }} (${{ matrix.target }})
+        id: build
+        run: >
+          bash scripts/build-php.sh "${{ matrix.version }}" "${{ matrix.target }}" "${{ steps.inputs.outputs.sha }}"
+          "${{ steps.inputs.outputs.extensions }}" "${{ steps.inputs.outputs.spc }}" "${{ steps.inputs.outputs.builder }}" dist
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ steps.build.outputs.archive }}
+      - name: Smoke test and record
+        run: >
+          python3 scripts/catalog.py php-result --archive "${{ steps.build.outputs.archive }}"
+          --version "${{ matrix.version }}" --target "${{ matrix.target }}"
+          --attestation-url "${{ steps.attest.outputs.attestation-url }}"
+          --out results/php-${{ matrix.version }}-${{ matrix.target }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ matrix.version }}-${{ matrix.target }}
+          path: |
+            dist/
+            results/
+
+  publish:
+    needs: [discover, verify, php]
+    if: ${{ !cancelled() && needs.discover.outputs.changed == 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+      - name: Collect results
+        run: |
+          mkdir -p work/results
+          cp -r artifacts/plan/. work/
+          find artifacts -path '*/results/*.json' -exec cp {} work/results/ \;
+          ls -la work/results || true
+      - name: Publish PHP builds as releases
+        id: php
+        run: |
+          declare -A rel
+          json="{}"
+          for f in work/results/php-*.json; do
+            [ -f "$f" ] || continue
+            ok=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['ok'])" "$f")
+            [ "$ok" = "True" ] || continue
+            version=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$f")
+            revision=$(python3 -c "import json,sys; cfg=json.load(open('catalog.config.json')); print(cfg.get('revisions',{}).get('php@'+sys.argv[1],1))" "$version")
+            tag="php-$version-r$revision"
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              gh release create "$tag" --title "PHP CLI $version (revision $revision)" --latest=false \
+                --notes "Static PHP $version CLI built from php.net sources by static-php-cli in CI. Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Install through the RAST Package Center."
+            fi
+            gh release upload "$tag" artifacts/php-"$version"-*/dist/php-"$version"-*.tar.gz --clobber
+            json=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); d[sys.argv[2]]=sys.argv[3]; print(json.dumps(d))" "$json" "$version" "$tag")
+          done
+          echo "releases=$json" >> "$GITHUB_OUTPUT"
+      - name: Assemble, sign and check the catalog
+        env:
+          CATALOG_SIGNING_KEY: ${{ secrets.CATALOG_SIGNING_KEY }}
+        run: |
+          python3 scripts/catalog.py assemble --plan work/plan.json --previous work/previous \
+            --results work/results --php-releases '${{ steps.php.outputs.releases }}' --out work/out/catalog.json
+          python3 scripts/catalog.py check work/out/catalog.json --previous work/previous --download new
+          python3 scripts/catalog.py sign work/out/catalog.json
+          python3 scripts/catalog.py check work/out/catalog.json
+      - name: Publish the signed catalog
+        run: |
+          gh release view catalog >/dev/null 2>&1 || gh release create catalog --title "Catalog" \
+            --notes "Signed RAST package catalog (catalog.json + catalog.json.sig). Updated by the catalog workflow." --latest=false
+          seq=$(python3 -c "import json; print(json.load(open('work/out/catalog.json'))['sequence'])")
+          cp work/out/catalog.json "work/out/catalog-$seq.json"
+          gh release upload catalog work/out/catalog.json.sig work/out/catalog.json "work/out/catalog-$seq.json" --clobber
+          echo "Published catalog sequence $seq" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Unit tests
+        run: python3 -m unittest discover -v tests
+      - name: Shell syntax
+        run: bash -n scripts/build-php.sh
+      - name: Published catalog verifies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/catalog.py previous --out work/previous
+          if [ -f work/previous/catalog.json ]; then python3 scripts/catalog.py check work/previous/catalog.json; fi
