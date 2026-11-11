@@ -164,9 +164,16 @@ def run_check(root: Path, exe_path: str, args: list[str], expect: str, home: Pat
 
 # ------------------------------------------------------------- definitions
 
-def runtime_spec(package: str, version: str, bundled: dict | None = None) -> dict:
-    """Executables and version checks per runtime (the checks RAST re-runs)."""
+OPTIONAL_EXECUTABLES = {"nodejs": {"corepack": "bin/corepack"}}
+
+
+def runtime_spec(package: str, version: str, bundled: dict | None = None, optional: set | None = None) -> dict:
+    """Executables and version checks per runtime (the checks RAST re-runs).
+
+    `optional` lists executables that only some releases ship (Node.js 25+
+    dropped corepack); they are declared only when found in the artifact."""
     bundled = bundled or {}
+    optional = optional or set()
     if package == "python":
         major_minor = ".".join(version.split(".")[:2])
         spec = {
@@ -185,8 +192,7 @@ def runtime_spec(package: str, version: str, bundled: dict | None = None) -> dic
                 {"name": "node", "path": "bin/node"},
                 {"name": "npm", "path": "bin/npm"},
                 {"name": "npx", "path": "bin/npx"},
-                {"name": "corepack", "path": "bin/corepack"},
-            ],
+            ] + ([{"name": "corepack", "path": "bin/corepack"}] if "corepack" in optional else []),
             "checks": [{"executable": "node", "args": ["--version"], "expect": f"v{version}"}],
         }
         if "npm" in bundled:
@@ -488,13 +494,14 @@ def cmd_verify(args):
             if item["package"] == "python":
                 pip = run_check(root, "bin/pip3", ["--version"], "pip ", home)
                 bundled["pip"] = pip.split()[1]
-            spec = runtime_spec(item["package"], item["version"], bundled)
+            optional = {name for name, rel in OPTIONAL_EXECUTABLES.get(item["package"], {}).items() if (root / rel).exists()}
+            spec = runtime_spec(item["package"], item["version"], bundled, optional)
             for exe in spec["executables"]:
                 p = root / exe["path"]
                 if not (p.exists() and os.access(p, os.X_OK)):
                     raise RuntimeError(f"executable {exe['path']} is missing")
             outputs = [run_check(root, next(e["path"] for e in spec["executables"] if e["name"] == c["executable"]), c.get("args", []), c["expect"], home) for c in spec["checks"]]
-            res.update({"ok": True, "sha256": sha, "size": size, "bundled": bundled, "checks": outputs, "verification": verification})
+            res.update({"ok": True, "sha256": sha, "size": size, "bundled": bundled, "optional": sorted(optional), "checks": outputs, "verification": verification})
             log(f"   ok: {outputs}")
         except Exception as e:  # noqa: BLE001 - every failure is recorded
             res["error"] = str(e)[:500]
@@ -567,8 +574,9 @@ def build_manifest(cfg, item, results: list[dict], php_release: str | None) -> t
     bundled = {}
     for r in ok:
         bundled.update(r.get("bundled") or {})
+    optional = set.intersection(*(set(r.get("optional") or []) for r in ok))
     m = base_manifest(cfg, item)
-    m["runtime"] = runtime_spec(item["package"], item["version"], bundled)
+    m["runtime"] = runtime_spec(item["package"], item["version"], bundled, optional)
     artifacts = []
     for r in sorted(ok, key=lambda r: r["target"]):
         t = item["targets"][r["target"]]
