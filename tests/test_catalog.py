@@ -1,8 +1,10 @@
 """Unit tests for the catalog tooling (python3 -m unittest discover tests)."""
 
+import argparse
 import copy
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -104,6 +106,43 @@ class CatalogRules(unittest.TestCase):
             rastpkg.validate_manifest(m)
         self.assertEqual(catalog.channel_of("nodejs", "24.22.2"), "24")
         self.assertIsNone(catalog.channel_of("go", "1.26.11"))
+
+
+class Reverification(unittest.TestCase):
+    """A version that is re-verified (new target or revision) stays installable."""
+
+    def run_pipeline(self, results):
+        cfg = json.loads((ROOT / "catalog.config.json").read_text())
+        pkgs = catalog.package_entries(cfg)
+        pkgs["go"]["versions"] = [manifest()]
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "prev").mkdir()
+            (d / "results").mkdir()
+            (d / "prev" / "catalog.json").write_text(json.dumps(catalog.catalog_doc(cfg, 7, pkgs)))
+            item = {"package": "go", "version": "1.26.11", "channel": "1.26", "kind": "upstream",
+                    "targets": ["linux-x86_64", "linux-aarch64"], "revision": 1, "status": "new"}
+            (d / "plan.json").write_text(json.dumps({"previousSequence": 7, "items": [item], "dropped": []}))
+            (d / "results" / "r.json").write_text(json.dumps(results))
+            ns = dict(plan=str(d / "plan.json"), previous=str(d / "prev"))
+            catalog.cmd_interim(argparse.Namespace(**ns, out=str(d / "interim.json")))
+            catalog.cmd_assemble(argparse.Namespace(**ns, results=str(d / "results"), php_releases="",
+                                                    out=str(d / "final.json")))
+            return json.loads((d / "interim.json").read_text()), json.loads((d / "final.json").read_text())
+
+    @staticmethod
+    def go(doc):
+        return next(p for p in doc["packages"] if p["id"] == "go")
+
+    def test_failed_reverification_keeps_the_previous_manifest(self):
+        failed = [{"package": "go", "version": "1.26.11", "target": t, "ok": False, "error": "boom"}
+                  for t in ("linux-x86_64", "linux-aarch64")]
+        interim, final = self.run_pipeline(failed)
+        for doc, seq in ((interim, 8), (final, 9)):
+            self.assertEqual(doc["sequence"], seq)
+            self.assertEqual([m["version"] for m in self.go(doc)["versions"]], ["1.26.11"])
+            self.assertEqual(self.go(doc)["detected"], [])
+            self.assertEqual(self.go(doc)["versions"][0], manifest())
 
 
 if __name__ == "__main__":

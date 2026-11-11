@@ -69,6 +69,11 @@ hours and on demand:
    upload. Verified versions become **"Update ready to install"** in RAST; a
    failure stays visible as `detected` with state `failed` and the reason.
 
+A version that is only being **re-verified** (a new target, a revision bump or
+`force`) is not announced again and stays installable with its previous
+manifest throughout; if re-verification fails, or covers fewer targets than
+before, the previous manifest is kept and the run summary says so.
+
 Manual run options: `withhold` (e.g. `go@1.26.11`) keeps a version out of the
 catalog; `force` re-verifies versions already listed. To rebuild a version,
 bump its revision in `catalog.config.json` (`"revisions": {"php@8.5.12": 2}`).

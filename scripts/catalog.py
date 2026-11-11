@@ -655,14 +655,13 @@ def catalog_doc(cfg, sequence: int, packages: dict) -> dict:
     }
 
 
+def previous_manifests(prev) -> dict[str, dict]:
+    return {manifest_key(m): m for pkg in (prev or {}).get("packages", []) for m in pkg.get("versions", [])}
+
+
 def carried(prev, plan) -> dict[str, dict]:
     keep = {f"{i['package']}@{i['version']}" for i in plan["items"] if i["status"] == "carry"}
-    out = {}
-    for pkg in (prev or {}).get("packages", []):
-        for m in pkg.get("versions", []):
-            if manifest_key(m) in keep:
-                out[manifest_key(m)] = m
-    return out
+    return {k: m for k, m in previous_manifests(prev).items() if k in keep}
 
 
 def cmd_interim(args):
@@ -678,20 +677,28 @@ def cmd_interim(args):
         for m in pkg.get("versions", []):
             if manifest_key(m) in plan.get("dropped", []):
                 packages[m["id"]]["versions"].append(m)
+    # A version that is only being re-verified (a new target or package revision)
+    # stays installable with its previous manifest and is not announced again.
+    before = previous_manifests(prev)
     stamp = iso(now())
     for i in plan["items"]:
-        if i["status"] == "new":
+        if i["status"] != "new":
+            continue
+        old = before.get(f"{i['package']}@{i['version']}")
+        if old:
+            packages[i["package"]]["versions"].append(old)
+        else:
             packages[i["package"]]["detected"].append({
                 "version": i["version"],
                 "channel": channel_of(i["package"], i["version"]) or i["channel"],
-                "detectedAt": stamp,
-                "state": "building" if i["kind"] == "built" else "verifying",
-                "detail": (
-                    f"New upstream release; the catalog workflow is building and testing it ({RUN_URL})."
-                    if i["kind"] == "built"
-                    else f"New upstream release; the catalog workflow is verifying checksums and running it ({RUN_URL})."
-                ),
-            })
+                    "detectedAt": stamp,
+                    "state": "building" if i["kind"] == "built" else "verifying",
+                    "detail": (
+                        f"New upstream release; the catalog workflow is building and testing it ({RUN_URL})."
+                        if i["kind"] == "built"
+                        else f"New upstream release; the catalog workflow is verifying checksums and running it ({RUN_URL})."
+                    ),
+                })
     doc = catalog_doc(cfg, plan["previousSequence"] + 1, packages)
     write_json(Path(args.out), doc)
 
@@ -708,6 +715,7 @@ def cmd_assemble(args):
     packages = package_entries(cfg)
     for m in carried(prev, plan).values():
         packages[m["id"]]["versions"].append(m)
+    before = previous_manifests(prev)
     stamp = iso(now())
     summary = []
     for i in plan["items"]:
@@ -718,7 +726,14 @@ def cmd_assemble(args):
             if not any(r["target"] == target for r in mine):
                 mine.append({"package": i["package"], "version": i["version"], "target": target, "ok": False, "error": "no result (job failed or was skipped)"})
         m, detail = build_manifest(cfg, i, mine, php_releases.get(i["version"]))
-        if m:
+        old = before.get(f"{i['package']}@{i['version']}")
+        if old and not (m and {a["target"] for a in m["artifacts"]} >= {a["target"] for a in old["artifacts"]}):
+            # Re-verification must not take away a version that was already
+            # verified: keep the previous manifest unless the new one covers
+            # at least the same targets.
+            packages[i["package"]]["versions"].append(old)
+            summary.append(f"kept {i['package']} {i['version']} from the previous catalog ({detail or 'fewer targets verified'})")
+        elif m:
             packages[i["package"]]["versions"].append(m)
             summary.append(f"verified {i['package']} {i['version']} ({', '.join(a['target'] for a in m['artifacts'])})")
         else:
