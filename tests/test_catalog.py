@@ -145,5 +145,14 @@ class Reverification(unittest.TestCase):
             self.assertEqual(self.go(doc)["versions"][0], manifest())
 
 
+class LocalRuns(unittest.TestCase):
+    def test_no_invented_workflow_run_url(self):
+        import os
+        if not os.environ.get("GITHUB_RUN_ID"):
+            self.assertIsNone(catalog.RUN_URL)
+            self.assertEqual(catalog.RUN_NOTE, "")
+        self.assertNotIn("/actions/runs/0", catalog.RUN_NOTE)
+
+
 if __name__ == "__main__":
     unittest.main()

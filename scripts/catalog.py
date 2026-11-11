@@ -42,9 +42,13 @@ NODE_INDEX = "https://nodejs.org/dist/index.json"
 NODE_KEYRING = "https://raw.githubusercontent.com/nodejs/release-keys/HEAD/gpg/pubring.kbx"
 PBS_REPO = "astral-sh/python-build-standalone"
 PHP_JSON = "https://www.php.net/releases/index.php?json&version={channel}&max=1"
-RUN_URL = os.environ.get("GITHUB_SERVER_URL", "https://github.com") + "/" + os.environ.get(
-    "GITHUB_REPOSITORY", "Enricko/rast-packages"
-) + "/actions/runs/" + os.environ.get("GITHUB_RUN_ID", "0")
+# Link to the workflow run; None for local runs (never invent a run URL).
+RUN_URL = (
+    f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+    if os.environ.get("GITHUB_RUN_ID") and os.environ.get("GITHUB_REPOSITORY")
+    else None
+)
+RUN_NOTE = f" ({RUN_URL})" if RUN_URL else ""
 
 
 # ------------------------------------------------------------------ helpers
@@ -587,14 +591,17 @@ def build_manifest(cfg, item, results: list[dict], php_release: str | None) -> t
                 "source": item["source"]["url"],
                 "sourceSha256": item["source"]["sha256"],
                 "verification": f"php.net source SHA-256 checked before the build; static-php-cli {r['buildinfo'].get('spcVersion')} verified by GitHub asset digest; built in {r['buildinfo'].get('builder')}",
-                "buildUrl": r["buildUrl"],
             }
+            if r.get("buildUrl"):
+                prov["buildUrl"] = r["buildUrl"]
             if r.get("attestationUrl"):
                 prov["attestationUrl"] = r["attestationUrl"]
             requires = {"notes": "Static musl binary: no host libraries needed. TLS uses the host CA bundle (/etc/ssl/certs)."}
         else:
             url = t["url"]
-            prov = {"kind": "upstream", "source": t["source"], "verification": r["verification"], "buildUrl": RUN_URL}
+            prov = {"kind": "upstream", "source": t["source"], "verification": r["verification"]}
+            if RUN_URL:
+                prov["buildUrl"] = RUN_URL
             requires = {}
             if item["package"] == "python":
                 requires = {"glibc": "2.17", "notes": f"python-build-standalone {item['buildTag']} (x86_64/aarch64 gnu install_only)."}
@@ -694,9 +701,9 @@ def cmd_interim(args):
                     "detectedAt": stamp,
                     "state": "building" if i["kind"] == "built" else "verifying",
                     "detail": (
-                        f"New upstream release; the catalog workflow is building and testing it ({RUN_URL})."
+                        f"New upstream release; the catalog workflow is building and testing it{RUN_NOTE}."
                         if i["kind"] == "built"
-                        else f"New upstream release; the catalog workflow is verifying checksums and running it ({RUN_URL})."
+                        else f"New upstream release; the catalog workflow is verifying checksums and running it{RUN_NOTE}."
                     ),
                 })
     doc = catalog_doc(cfg, plan["previousSequence"] + 1, packages)
