@@ -159,11 +159,21 @@ jobs:
         with:
           path: artifacts
       - name: Collect results
+        env:
+          VERIFY_RESULT: ${{ needs.verify.result }}
         run: |
           mkdir -p work/results
           cp -r artifacts/plan/. work/
-          find artifacts -path '*/results/*.json' -exec cp {} work/results/ \;
-          ls -la work/results || true
+          # upload-artifact drops the common directory of its paths: the
+          # single-path upstream uploads have their results at the artifact
+          # root, the PHP uploads (dist/ + results/) keep results/.
+          find artifacts -name '*.json' \( -path 'artifacts/results-upstream-*/*' -o -path 'artifacts/php-*/results/*' \) \
+            -exec cp {} work/results/ \;
+          ls -la work/results
+          if [ "$VERIFY_RESULT" = success ] && ! compgen -G 'work/results/upstream-*.json' >/dev/null; then
+            echo "::error::the verify jobs succeeded but none of their results were collected"
+            exit 1
+          fi
       - name: Publish PHP builds as releases
         id: php
         run: |
