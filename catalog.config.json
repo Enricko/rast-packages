@@ -70,7 +70,8 @@
       "keepPatches": 2,
       "channels": [
         { "id": "26", "label": "Node.js 26", "status": "LTS" },
-        { "id": "24", "label": "Node.js 24", "status": "maintenance LTS" }
+        { "id": "24", "label": "Node.js 24", "status": "maintenance LTS" },
+        { "id": "22", "label": "Node.js 22", "status": "maintenance LTS" }
       ]
     }
   }
