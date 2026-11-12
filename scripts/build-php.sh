@@ -40,7 +40,10 @@ apk add --no-cache bash file wget cmake gcc g++ jq autoconf git libstdc++ linux-
   binutils bison flex pkgconf automake libtool curl xz patch perl gettext-dev re2c
 cd /build
 ./spc doctor --auto-fix
-./spc download --with-php="$VERSION" --for-extensions="$EXTENSIONS" \
+# static-php-cli resolves many sources through api.github.com; GITHUB_TOKEN
+# (read-only, see build-php.sh) avoids the anonymous rate limit of shared
+# runner IPs, --retry absorbs transient download errors.
+./spc download --with-php="$VERSION" --for-extensions="$EXTENSIONS" --retry=2 \
   --custom-url="php-src:https://www.php.net/distributions/php-$VERSION.tar.xz"
 # The PHP source used for the build must be the php.net release archive.
 found=""
@@ -58,10 +61,14 @@ chown -R "$HOST_UID:$HOST_GID" /build
 INSIDE
 chmod +x "$WORK/inside.sh"
 
+# The build runs third-party build scripts, so the token passed in must be
+# read-only (the php job in catalog.yml has contents: read). It is passed by
+# name, never on the command line.
+export GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 echo "::group::build PHP $VERSION ($TARGET) in $BUILDER"
 docker run --rm -v "$WORK:/build" -w /build \
   -e VERSION="$VERSION" -e EXTENSIONS="$EXTENSIONS" -e SRC_SHA="$SRC_SHA" \
-  -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+  -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e GITHUB_TOKEN \
   "$BUILDER" /build/inside.sh
 echo "::endgroup::"
 

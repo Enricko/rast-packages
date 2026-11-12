@@ -19,10 +19,11 @@ on:
         type: boolean
         default: false
 
+# Least privilege: read-only by default. Only the jobs that upload release
+# assets get contents: write; the PHP builds (third-party build scripts run
+# there) get a read-only token plus what provenance attestation needs.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 concurrency:
   group: catalog
@@ -34,6 +35,8 @@ env:
 jobs:
   discover:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     outputs:
       changed: ${{ steps.plan.outputs.changed }}
       has_new: ${{ steps.plan.outputs.has_new }}
@@ -94,6 +97,10 @@ jobs:
   php:
     needs: discover
     if: needs.discover.outputs.has_php == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.php_matrix) }}
@@ -144,6 +151,8 @@ jobs:
     needs: [discover, verify, php]
     if: ${{ !cancelled() && needs.discover.outputs.changed == 'true' }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v5
