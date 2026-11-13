@@ -31,7 +31,7 @@ concurrency:
 env:
   GH_TOKEN: ${{ github.token }}
   # RAST release that ships the Rust catalog commands.
-  RAST_VERSION: "0.11.6"
+  RAST_VERSION: "0.11.10"
 
 jobs:
   discover:
