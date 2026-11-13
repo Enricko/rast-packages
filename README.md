@@ -7,7 +7,7 @@ installs side by side under `/var/lib/rast/packages/runtimes/<id>/<version>/`.
 | Repository | Responsibility |
 |---|---|
 | [Enricko/rast](https://github.com/Enricko/rast) | Package Center UI and API, installer, validation, authorization, jobs |
-| **Enricko/rast-packages** (this) | Official catalog: discovers, verifies or builds, tests, signs and publishes |
+| **Enricko/rast-packages** (this) | Official catalog: discovers, verifies or builds, tests, signs and publishes (all via the Rust `rast catalog` commands) |
 | [Enricko/rast-package-template](https://github.com/Enricko/rast-package-template) | Forkable starter for third-party packages installed from GitHub |
 
 ## What RAST downloads
@@ -88,13 +88,21 @@ with `packages_catalog_keys` in `rast.toml`.
 
 ## Local development
 
+Download the Rust tool once (replace `v0.11.6` with the release named in the
+workflow) and run the catalog commands from the repository root:
+
 ```sh
-python3 -m unittest discover tests
-python3 scripts/catalog.py previous --out work/previous
-python3 scripts/catalog.py discover --out work/plan.json
-python3 scripts/catalog.py verify --plan work/plan.json --target linux-x86_64 --out work/results/x86_64.json
-python3 scripts/catalog.py check work/previous/catalog.json
+mkdir -p bin
+curl -fsSL -o bin/rast https://github.com/Enricko/rast/releases/download/v0.11.6/rast-linux-x86_64
+chmod +x bin/rast
+
+./bin/rast catalog previous --out work/previous
+./bin/rast catalog discover --previous work/previous --out work/plan.json
+./bin/rast catalog verify --plan work/plan.json --target linux-x86_64 --out work/results/x86_64.json
+./bin/rast catalog check work/previous/catalog.json
 ```
 
-`scripts/rastpkg.py` mirrors RAST's manifest rules so nothing invalid is ever
-signed.
+`rast catalog` uses RAST's own manifest validator, so nothing invalid is ever
+signed. Signing uses `CATALOG_SIGNING_KEY` (PKCS#8 PEM) and Ed25519 from Rust;
+`gh` and `gpgv` are only used to download releases and verify Node's signature,
+exactly as before.

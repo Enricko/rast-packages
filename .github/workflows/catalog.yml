@@ -4,6 +4,8 @@ name: catalog
 # x86_64 and aarch64 runners, then publish a signed catalog. New versions are
 # announced first ("detected", state verifying/building) and only become
 # installable in the final catalog after every check passed.
+#
+# All catalog logic lives in the Rust `rast catalog` commands.
 
 on:
   schedule:
@@ -19,9 +21,6 @@ on:
         type: boolean
         default: false
 
-# Least privilege: read-only by default. Only the jobs that upload release
-# assets get contents: write; the PHP builds (third-party build scripts run
-# there) get a read-only token plus what provenance attestation needs.
 permissions:
   contents: read
 
@@ -31,6 +30,8 @@ concurrency:
 
 env:
   GH_TOKEN: ${{ github.token }}
+  # RAST release that ships the Rust catalog commands.
+  RAST_VERSION: "0.11.6"
 
 jobs:
   discover:
@@ -46,12 +47,20 @@ jobs:
       php_matrix: ${{ steps.plan.outputs.php_matrix }}
     steps:
       - uses: actions/checkout@v5
+      - name: Install the RAST catalog tool
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          curl -fsSL -o bin/rast \
+            "https://github.com/Enricko/rast/releases/download/v${RAST_VERSION}/rast-linux-x86_64"
+          chmod +x bin/rast
+          ./bin/rast version
       - name: Fetch and verify the published catalog
-        run: python3 scripts/catalog.py previous --out work/previous
+        run: ./bin/rast catalog previous --out work/previous
       - name: Discover upstream versions
         id: plan
         run: >
-          python3 scripts/catalog.py discover --previous work/previous --out work/plan.json
+          ./bin/rast catalog discover --previous work/previous --out work/plan.json
           --withhold "${{ inputs.withhold }}" ${{ inputs.force && '--force' || '' }}
           --github-output "$GITHUB_OUTPUT"
       - name: Announce new upstream versions (detected, not yet installable)
@@ -59,9 +68,10 @@ jobs:
         env:
           CATALOG_SIGNING_KEY: ${{ secrets.CATALOG_SIGNING_KEY }}
         run: |
-          python3 scripts/catalog.py interim --plan work/plan.json --previous work/previous --out work/interim/catalog.json
-          python3 scripts/catalog.py sign work/interim/catalog.json
-          python3 scripts/catalog.py check work/interim/catalog.json --previous work/previous
+          set -euo pipefail
+          ./bin/rast catalog interim --plan work/plan.json --previous work/previous --out work/interim/catalog.json
+          ./bin/rast catalog sign work/interim/catalog.json
+          ./bin/rast catalog check work/interim/catalog.json --previous work/previous
           gh release view catalog >/dev/null 2>&1 || gh release create catalog --title "Catalog" \
             --notes "Signed RAST package catalog (catalog.json + catalog.json.sig). Updated by the catalog workflow." --latest=false
           # Signature first: a client that races the upload sees an old
@@ -83,12 +93,21 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
+      - name: Install the RAST catalog tool
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          arch=${{ startsWith(matrix.runner, 'ubuntu-24.04-arm') && 'aarch64' || 'x86_64' }}
+          curl -fsSL -o bin/rast \
+            "https://github.com/Enricko/rast/releases/download/v${RAST_VERSION}/rast-linux-${arch}"
+          chmod +x bin/rast
+          ./bin/rast version
       - uses: actions/download-artifact@v5
         with:
           name: plan
           path: work
       - name: Download, verify and run upstream artifacts (${{ matrix.target }})
-        run: python3 scripts/catalog.py verify --plan work/plan.json --target ${{ matrix.target }} --out results/upstream-${{ matrix.target }}.json
+        run: ./bin/rast catalog verify --plan work/plan.json --target ${{ matrix.target }} --out results/upstream-${{ matrix.target }}.json
       - uses: actions/upload-artifact@v4
         with:
           name: results-upstream-${{ matrix.target }}
@@ -108,27 +127,31 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
+      - name: Install the RAST catalog tool
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          arch=${{ startsWith(matrix.runner, 'ubuntu-24.04-arm') && 'aarch64' || 'x86_64' }}
+          curl -fsSL -o bin/rast \
+            "https://github.com/Enricko/rast/releases/download/v${RAST_VERSION}/rast-linux-${arch}"
+          chmod +x bin/rast
+          ./bin/rast version
       - uses: actions/download-artifact@v5
         with:
           name: plan
           path: work
       - name: Read build inputs
         id: inputs
-        run: |
-          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
-          import json
-          cfg = json.load(open("catalog.config.json"))["packages"]["php"]
-          item = next(i for i in json.load(open("work/plan.json"))["items"] if i["package"] == "php" and i["version"] == "${{ matrix.version }}")
-          print(f"sha={item['source']['sha256']}")
-          print(f"extensions={cfg['extensions']}")
-          print(f"spc={cfg['spcVersion']}")
-          print(f"builder={cfg['builder']}")
-          EOF
+        run: ./bin/rast catalog php-inputs --plan work/plan.json --version "${{ matrix.version }}"
       - name: Build PHP ${{ matrix.version }} (${{ matrix.target }})
         id: build
-        run: >
-          bash scripts/build-php.sh "${{ matrix.version }}" "${{ matrix.target }}" "${{ steps.inputs.outputs.sha }}"
-          "${{ steps.inputs.outputs.extensions }}" "${{ steps.inputs.outputs.spc }}" "${{ steps.inputs.outputs.builder }}" dist
+        run: |
+          ./bin/rast catalog build-php --version "${{ matrix.version }}" --target "${{ matrix.target }}" \
+            --source-sha256 "${{ steps.inputs.outputs.sha }}" \
+            --extensions "${{ steps.inputs.outputs.extensions }}" \
+            --spc-version "${{ steps.inputs.outputs.spc }}" \
+            --builder "${{ steps.inputs.outputs.builder }}" \
+            --out dist
       - name: Attest build provenance
         id: attest
         uses: actions/attest-build-provenance@v3
@@ -136,7 +159,7 @@ jobs:
           subject-path: ${{ steps.build.outputs.archive }}
       - name: Smoke test and record
         run: >
-          python3 scripts/catalog.py php-result --archive "${{ steps.build.outputs.archive }}"
+          ./bin/rast catalog php-result --archive "${{ steps.build.outputs.archive }}"
           --version "${{ matrix.version }}" --target "${{ matrix.target }}"
           --attestation-url "${{ steps.attest.outputs.attestation-url }}"
           --out results/php-${{ matrix.version }}-${{ matrix.target }}.json
@@ -155,59 +178,40 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v5
+      - name: Install the RAST catalog tool
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          curl -fsSL -o bin/rast \
+            "https://github.com/Enricko/rast/releases/download/v${RAST_VERSION}/rast-linux-x86_64"
+          chmod +x bin/rast
+          ./bin/rast version
       - uses: actions/download-artifact@v5
         with:
           path: artifacts
       - name: Collect results
         env:
           VERIFY_RESULT: ${{ needs.verify.result }}
-        run: |
-          mkdir -p work/results
-          cp -r artifacts/plan/. work/
-          # upload-artifact drops the common directory of its paths: the
-          # single-path upstream uploads have their results at the artifact
-          # root, the PHP uploads (dist/ + results/) keep results/.
-          find artifacts -name '*.json' \( -path 'artifacts/results-upstream-*/*' -o -path 'artifacts/php-*/results/*' \) \
-            -exec cp {} work/results/ \;
-          ls -la work/results
-          if [ "$VERIFY_RESULT" = success ] && ! compgen -G 'work/results/upstream-*.json' >/dev/null; then
-            echo "::error::the verify jobs succeeded but none of their results were collected"
-            exit 1
-          fi
+        run: ./bin/rast catalog collect --artifacts artifacts --work work --verify-result "$VERIFY_RESULT"
       - name: Publish PHP builds as releases
         id: php
-        run: |
-          declare -A rel
-          json="{}"
-          for f in work/results/php-*.json; do
-            [ -f "$f" ] || continue
-            ok=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['ok'])" "$f")
-            [ "$ok" = "True" ] || continue
-            version=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$f")
-            revision=$(python3 -c "import json,sys; cfg=json.load(open('catalog.config.json')); print(cfg.get('revisions',{}).get('php@'+sys.argv[1],1))" "$version")
-            tag="php-$version-r$revision"
-            if ! gh release view "$tag" >/dev/null 2>&1; then
-              gh release create "$tag" --title "PHP CLI $version (revision $revision)" --latest=false \
-                --notes "Static PHP $version CLI built from php.net sources by static-php-cli in CI. Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Install through the RAST Package Center."
-            fi
-            gh release upload "$tag" artifacts/php-"$version"-*/dist/php-"$version"-*.tar.gz --clobber
-            json=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); d[sys.argv[2]]=sys.argv[3]; print(json.dumps(d))" "$json" "$version" "$tag")
-          done
-          echo "releases=$json" >> "$GITHUB_OUTPUT"
+        run: ./bin/rast catalog php-publish --results work/results --archives work/php-dist --github-output "$GITHUB_OUTPUT"
       - name: Assemble, sign and check the catalog
         env:
           CATALOG_SIGNING_KEY: ${{ secrets.CATALOG_SIGNING_KEY }}
         run: |
-          python3 scripts/catalog.py assemble --plan work/plan.json --previous work/previous \
+          set -euo pipefail
+          ./bin/rast catalog assemble --plan work/plan.json --previous work/previous \
             --results work/results --php-releases '${{ steps.php.outputs.releases }}' --out work/out/catalog.json
-          python3 scripts/catalog.py check work/out/catalog.json --previous work/previous --download new
-          python3 scripts/catalog.py sign work/out/catalog.json
-          python3 scripts/catalog.py check work/out/catalog.json
+          ./bin/rast catalog check work/out/catalog.json --previous work/previous --download new
+          ./bin/rast catalog sign work/out/catalog.json
+          ./bin/rast catalog check work/out/catalog.json
       - name: Publish the signed catalog
         run: |
+          set -euo pipefail
           gh release view catalog >/dev/null 2>&1 || gh release create catalog --title "Catalog" \
             --notes "Signed RAST package catalog (catalog.json + catalog.json.sig). Updated by the catalog workflow." --latest=false
-          seq=$(python3 -c "import json; print(json.load(open('work/out/catalog.json'))['sequence'])")
+          seq=$(./bin/rast catalog sequence work/out/catalog.json | tail -n 1)
           cp work/out/catalog.json "work/out/catalog-$seq.json"
           gh release upload catalog work/out/catalog.json.sig work/out/catalog.json "work/out/catalog-$seq.json" --clobber
           echo "Published catalog sequence $seq" >> "$GITHUB_STEP_SUMMARY"
