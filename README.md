@@ -1,8 +1,9 @@
 # rast-packages
 
 The **official package catalog** for the [RAST](https://github.com/Enricko/rast)
-Package Center: verified Python, PHP CLI, Go and Node.js runtimes that RAST
-installs side by side under `/var/lib/rast/packages/runtimes/<id>/<version>/`.
+Package Center: verified Python, PHP CLI, Go, Node.js, Rust, Eclipse Temurin
+JDK, Bun, Deno and .NET SDK runtimes that RAST installs side by side under
+`/var/lib/rast/packages/runtimes/<id>/<version>/`.
 
 | Repository | Responsibility |
 |---|---|
@@ -35,6 +36,11 @@ the catalog's `allowedHosts` (checked by RAST on every redirect).
 | **PHP CLI** 8.4 / 8.5 | Built **in this repository's CI** with [static-php-cli](https://github.com/crazywhalecc/static-php-cli) in `alpine:3.22` → one static musl binary per target | static-php-cli release binary checked against its GitHub asset digest; the PHP source archive used must match the SHA-256 published by php.net; `php -v` / `php -m` on native runners; GitHub build-provenance attestation for each archive (`gh attestation verify <file> --repo Enricko/rast-packages`). |
 | **Go** 1.26 / 1.27 | Official `go.dev` Linux archives (`dl.google.com`), unmodified | SHA-256 from the go.dev release index; downloaded and re-hashed; `go version` runs. Statically linked; cgo builds need a host C compiler. |
 | **Node.js** 24 / 26 LTS | Official `nodejs.org/dist` Linux `.tar.gz`, unmodified | `SHASUMS256.txt` signature verified with `gpgv` against the [nodejs/release-keys](https://github.com/nodejs/release-keys) keyring; bytes re-hashed; `node --version` and `npm --version` run — the **npm version recorded is the one found in the archive**. Needs glibc ≥ 2.28. |
+| **Rust** stable | The official [static.rust-lang.org](https://static.rust-lang.org/dist/) dist components `rustc`, `rust-std`, `cargo`, `rustfmt` and `clippy` for `x86_64`/`aarch64-unknown-linux-gnu`, unmodified, merged into one standalone prefix (not rustup; `rust-toolchain.toml` is rustup-only, so a RAST-pinned version is used instead) | The channel manifest's SHA-256 must match `channel-rust-stable.toml.sha256`; its OpenPGP signature is verified with `gpgv` against the pinned Rust release signing key (fingerprint `108F 6620 5EAE B0AA A8DD 5E1C 85AB 96E6 FA1B E5FE`, fetched from `static.rust-lang.org`); **every component's SHA-256 comes from that signed manifest**; all five archives are downloaded and re-hashed and `rustc --version` / `cargo --version` / `rustfmt --version` / `clippy-driver --version` run. Needs glibc ≥ 2.17. |
+| **Eclipse Temurin JDK** 8 / 11 / 17 / 21 / 25 (LTS) / 27 | [Adoptium](https://api.adoptium.net) `linux` `jdk` HotSpot `.tar.gz` per feature version, unmodified | The latest assets per feature version come from the Adoptium API; each SHA-256 must equal the GitHub release asset digest **and** the published `.sha256.txt`; bytes re-hashed; `java --version`, `javac -version`, `jar --version` and `jshell --version` run (JDK 8 has no `jshell` and uses `java -version`). Needs glibc ≥ 2.17. |
+| **Bun** stable | Official `oven-sh/bun` GitHub release `bun-linux-{x64,aarch64}.zip`, unmodified | GitHub asset SHA-256 digest must equal the release `SHASUMS256.txt`; bytes re-hashed; `bun --version` runs. Needs glibc ≥ 2.17. |
+| **Deno** stable | Official `denoland/deno` GitHub release `deno-{x86_64,aarch64}-unknown-linux-gnu.zip`, unmodified | GitHub asset SHA-256 digest must equal the published per-asset `.sha256sum`; **GitHub build-provenance attestation verified with `gh attestation verify --repo denoland/deno`**; bytes re-hashed; `deno --version` runs. Needs glibc ≥ 2.27. |
+| **.NET SDK** 10.0 LTS / 11.0 STS | Microsoft `dotnet-sdk-<version>-linux-{x64,arm64}.tar.gz` from the official release metadata (`builds.dotnet.microsoft.com`), unmodified; the SDK archive includes the .NET and ASP.NET Core runtimes | SHA-512 of every archive must match the hash in Microsoft's `releases.json` release metadata; the manifest pins the computed SHA-256 of the downloaded bytes; `dotnet --version`, `dotnet --list-sdks` and `dotnet --list-runtimes` run on the native runner. Needs glibc ≥ 2.27. |
 
 Targets: `linux-x86_64` (ubuntu-24.04 runners) and `linux-aarch64`
 (ubuntu-24.04-arm runners). Each artifact is extracted and executed on a
@@ -55,8 +61,10 @@ static: no host libraries are needed. TLS uses the host CA bundle
 hours and on demand:
 
 1. **discover** — fetch and verify the published catalog; query go.dev,
-   nodejs.org, the python-build-standalone release and php.net; keep the newest
-   patch(es) of each tracked channel (`catalog.config.json`).
+   nodejs.org, the python-build-standalone release, php.net, the Rust stable
+   channel manifest, the Adoptium API, the Bun/Deno GitHub releases and the
+   Microsoft .NET release metadata; keep the newest patch(es) of each tracked
+   channel (`catalog.config.json`).
 2. **announce** — if anything is new, publish a catalog (sequence + 1) that
    lists it under `detected` with state `verifying` or `building`. RAST shows
    this as **"New upstream version detected"**; it is not installable yet.
@@ -73,6 +81,14 @@ A version that is only being **re-verified** (a new target, a revision bump or
 `force`) is not announced again and stays installable with its previous
 manifest throughout; if re-verification fails, or covers fewer targets than
 before, the previous manifest is kept and the run summary says so.
+
+> **Release sequencing:** the Rust, Temurin, Bun, Deno and .NET providers use
+> the multi-archive/zip manifest fields and `runtime.env`/`runtime.pathDirs`
+> added in RAST 0.14.0. Old RAST binaries (including the current workflow pin)
+> do not parse those manifests, so the workflow's `RAST_VERSION` pin and this
+> repository's `minRastVersion` must both move to `0.14.0` when that release is
+> tagged — not before. Until then the pinned binary only publishes the
+> existing Python/PHP/Go/Node.js providers.
 
 Manual run options: `withhold` (e.g. `go@1.26.11`) keeps a version out of the
 catalog; `force` re-verifies versions already listed. To rebuild a version,

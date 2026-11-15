@@ -8,19 +8,41 @@
   "repository": "https://github.com/Enricko/rast-packages",
   "keyId": "rast-official-2026-11",
   "publicKey": "keys/rast-official-2026-11.pub.pem",
-  "minRastVersion": "0.5.0",
+  "minRastVersion": "0.14.0",
   "expiresDays": 30,
   "refreshBeforeDays": 10,
   "allowedHosts": [
     "dl.google.com",
     "nodejs.org",
+    "static.rust-lang.org",
+    "builds.dotnet.microsoft.com",
     "github.com",
     "release-assets.githubusercontent.com",
     "objects.githubusercontent.com"
   ],
   "targets": {
-    "linux-x86_64": { "runner": "ubuntu-24.04", "go": "amd64", "node": "x64", "python": "x86_64" },
-    "linux-aarch64": { "runner": "ubuntu-24.04-arm", "go": "arm64", "node": "arm64", "python": "aarch64" }
+    "linux-x86_64": {
+      "runner": "ubuntu-24.04",
+      "go": "amd64",
+      "node": "x64",
+      "python": "x86_64",
+      "rustTriple": "x86_64-unknown-linux-gnu",
+      "javaArch": "x64",
+      "bunArch": "x64",
+      "denoArch": "x86_64",
+      "dotnetRid": "linux-x64"
+    },
+    "linux-aarch64": {
+      "runner": "ubuntu-24.04-arm",
+      "go": "arm64",
+      "node": "arm64",
+      "python": "aarch64",
+      "rustTriple": "aarch64-unknown-linux-gnu",
+      "javaArch": "aarch64",
+      "bunArch": "aarch64",
+      "denoArch": "aarch64",
+      "dotnetRid": "linux-arm64"
+    }
   },
   "withheld": [],
   "revisions": {},
@@ -32,9 +54,21 @@
       "license": "PSF-2.0",
       "keepPatches": 1,
       "channels": [
-        { "id": "3.15", "label": "Python 3.15", "status": "latest" },
-        { "id": "3.14", "label": "Python 3.14", "status": "bugfix" },
-        { "id": "3.13", "label": "Python 3.13", "status": "security fixes" }
+        {
+          "id": "3.15",
+          "label": "Python 3.15",
+          "status": "latest"
+        },
+        {
+          "id": "3.14",
+          "label": "Python 3.14",
+          "status": "bugfix"
+        },
+        {
+          "id": "3.13",
+          "label": "Python 3.13",
+          "status": "security fixes"
+        }
       ]
     },
     "php": {
@@ -47,8 +81,16 @@
       "builder": "alpine:3.22",
       "extensions": "bcmath,calendar,ctype,curl,dom,exif,fileinfo,filter,iconv,mbregex,mbstring,openssl,pcntl,pdo,pdo_mysql,pdo_sqlite,phar,posix,readline,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib",
       "channels": [
-        { "id": "8.5", "label": "PHP 8.5", "status": "active support" },
-        { "id": "8.4", "label": "PHP 8.4", "status": "active support" }
+        {
+          "id": "8.5",
+          "label": "PHP 8.5",
+          "status": "active support"
+        },
+        {
+          "id": "8.4",
+          "label": "PHP 8.4",
+          "status": "active support"
+        }
       ]
     },
     "go": {
@@ -58,8 +100,16 @@
       "license": "BSD-3-Clause",
       "keepPatches": 2,
       "channels": [
-        { "id": "1.27", "label": "Go 1.27", "status": "latest" },
-        { "id": "1.26", "label": "Go 1.26", "status": "supported" }
+        {
+          "id": "1.27",
+          "label": "Go 1.27",
+          "status": "latest"
+        },
+        {
+          "id": "1.26",
+          "label": "Go 1.26",
+          "status": "supported"
+        }
       ]
     },
     "nodejs": {
@@ -69,9 +119,122 @@
       "license": "MIT",
       "keepPatches": 2,
       "channels": [
-        { "id": "26", "label": "Node.js 26", "status": "LTS" },
-        { "id": "24", "label": "Node.js 24", "status": "maintenance LTS" },
-        { "id": "22", "label": "Node.js 22", "status": "maintenance LTS" }
+        {
+          "id": "26",
+          "label": "Node.js 26",
+          "status": "LTS"
+        },
+        {
+          "id": "24",
+          "label": "Node.js 24",
+          "status": "maintenance LTS"
+        },
+        {
+          "id": "22",
+          "label": "Node.js 22",
+          "status": "maintenance LTS"
+        }
+      ]
+    },
+    "rust": {
+      "name": "Rust",
+      "description": "The Rust toolchain (rustc, cargo, rust-std, rustfmt, clippy) from the official static.rust-lang.org dist components, installed as one standalone prefix (not rustup).",
+      "homepage": "https://www.rust-lang.org",
+      "license": "MIT OR Apache-2.0",
+      "keepPatches": 1,
+      "channels": [
+        {
+          "id": "stable",
+          "label": "Rust stable",
+          "status": "stable"
+        }
+      ]
+    },
+    "java": {
+      "name": "Eclipse Temurin JDK",
+      "description": "Eclipse Temurin JDK (HotSpot) LTS and current feature releases from the Adoptium API: java, javac, jar and jshell, with JAVA_HOME pointing at the version prefix.",
+      "homepage": "https://adoptium.net",
+      "license": "GPL-2.0 WITH Classpath-exception-2.0",
+      "keepPatches": 1,
+      "channels": [
+        {
+          "id": "8",
+          "label": "Temurin 8 (LTS)",
+          "status": "LTS"
+        },
+        {
+          "id": "11",
+          "label": "Temurin 11 (LTS)",
+          "status": "LTS"
+        },
+        {
+          "id": "17",
+          "label": "Temurin 17 (LTS)",
+          "status": "LTS"
+        },
+        {
+          "id": "21",
+          "label": "Temurin 21 (LTS)",
+          "status": "LTS"
+        },
+        {
+          "id": "25",
+          "label": "Temurin 25 (LTS, latest)",
+          "status": "LTS"
+        },
+        {
+          "id": "27",
+          "label": "Temurin 27 (current)",
+          "status": "current"
+        }
+      ]
+    },
+    "bun": {
+      "name": "Bun",
+      "description": "Bun JavaScript/TypeScript runtime, bundler and package manager from the official oven-sh/bun GitHub releases, verified against SHASUMS256.txt and the GitHub asset digest.",
+      "homepage": "https://bun.com",
+      "license": "MIT",
+      "keepPatches": 2,
+      "channels": [
+        {
+          "id": "stable",
+          "label": "Bun stable",
+          "status": "stable"
+        }
+      ]
+    },
+    "deno": {
+      "name": "Deno",
+      "description": "Deno JavaScript/TypeScript runtime from the official denoland/deno GitHub releases, verified against the release .sha256sum files, GitHub asset digests and build-provenance attestations.",
+      "homepage": "https://deno.com",
+      "license": "MIT",
+      "keepPatches": 2,
+      "githubAttestations": true,
+      "channels": [
+        {
+          "id": "stable",
+          "label": "Deno stable",
+          "status": "stable"
+        }
+      ]
+    },
+    "dotnet": {
+      "name": ".NET SDK",
+      "description": "Microsoft .NET SDK with the included .NET and ASP.NET Core runtimes, from the official Microsoft release metadata (active LTS and STS channels), with hashes taken from that metadata.",
+      "homepage": "https://dotnet.microsoft.com",
+      "license": "MIT",
+      "keepPatches": 1,
+      "channels": [
+        {
+          "id": "10.0",
+          "label": ".NET 10 (LTS)",
+          "status": "LTS"
+        },
+        {
+          "id": "11.0",
+          "label": ".NET 11 (STS, current)",
+          "status": "STS (current)"
+        }
       ]
     }
   }
