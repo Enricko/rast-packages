@@ -31,7 +31,7 @@ concurrency:
 env:
   GH_TOKEN: ${{ github.token }}
   # RAST release that ships the Rust catalog commands.
-  RAST_VERSION: "0.14.2"
+  RAST_VERSION: "0.15.0"
 
 jobs:
   discover:
@@ -93,6 +93,17 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
+      - name: Free disk space
+        # The Clang/LLVM Linux toolchain archive expands to ~9 GiB and the
+        # hosted runner has 14 GB of SSD. Remove preinstalled toolchains the
+        # verification never uses: the checks execute the downloaded prefixes
+        # plus the image's JDK, PHP, git, gh, tar and gpgv.
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
       - name: Install the RAST catalog tool
         run: |
           set -euo pipefail

@@ -2,8 +2,9 @@
 
 The **official package catalog** for the [RAST](https://github.com/Enricko/rast)
 Package Center: verified Python, PHP CLI, Go, Node.js, Rust, Eclipse Temurin
-JDK, Bun, Deno and .NET SDK runtimes that RAST installs side by side under
-`/var/lib/rast/packages/runtimes/<id>/<version>/`.
+JDK, Bun, Deno, .NET SDK (C#), Clang/LLVM (C/C++), Flutter (with Dart),
+Composer, Zig, Kotlin, CMake, Gradle and Apache Maven runtimes that RAST
+installs side by side under `/var/lib/rast/packages/runtimes/<id>/<version>/`.
 
 | Repository | Responsibility |
 |---|---|
@@ -40,11 +41,36 @@ the catalog's `allowedHosts` (checked by RAST on every redirect).
 | **Eclipse Temurin JDK** 8 / 11 / 17 / 21 / 25 (LTS) / 27 | [Adoptium](https://api.adoptium.net) `linux` `jdk` HotSpot `.tar.gz` per feature version, unmodified | The latest assets per feature version come from the Adoptium API; each SHA-256 must equal the GitHub release asset digest **and** the published `.sha256.txt`; bytes re-hashed; `java --version`, `javac -version`, `jar --version` and `jshell --version` run (JDK 8 has no `jshell` and uses `java -version`). Needs glibc ≥ 2.17. |
 | **Bun** stable | Official `oven-sh/bun` GitHub release `bun-linux-{x64,aarch64}.zip`, unmodified | GitHub asset SHA-256 digest must equal the release `SHASUMS256.txt`; bytes re-hashed; `bun --version` runs. Needs glibc ≥ 2.17. |
 | **Deno** stable | Official `denoland/deno` GitHub release `deno-{x86_64,aarch64}-unknown-linux-gnu.zip`, unmodified | GitHub asset SHA-256 digest must equal the published per-asset `.sha256sum`; the GitHub release attestation (in-toto release predicate) is confirmed for this exact artifact digest through the GitHub attestations API (GitHub CLI reports no attestations for this predicate); bytes re-hashed; `deno --version` runs. Needs glibc ≥ 2.27. |
-| **.NET SDK** 10.0 LTS / 11.0 STS | Microsoft `dotnet-sdk-<version>-linux-{x64,arm64}.tar.gz` from the official release metadata (`builds.dotnet.microsoft.com`), unmodified; the SDK archive includes the .NET and ASP.NET Core runtimes | SHA-512 of every archive must match the hash in Microsoft's `releases.json` release metadata; the manifest pins the computed SHA-256 of the downloaded bytes; `dotnet --version`, `dotnet --list-sdks` and `dotnet --list-runtimes` run on the native runner. Needs glibc ≥ 2.27. |
+| **.NET SDK** 10.0 LTS / 11.0 STS | Microsoft `dotnet-sdk-<version>-linux-{x64,arm64}.tar.gz` from the official release metadata (`builds.dotnet.microsoft.com`), unmodified; the SDK archive includes the .NET and ASP.NET Core runtimes and provides the C# toolchain | SHA-512 of every archive must match the hash in Microsoft's `releases.json` release metadata; the manifest pins the computed SHA-256 of the downloaded bytes; `dotnet --version`, `dotnet --list-sdks` and `dotnet --list-runtimes` run on the native runner. Needs glibc ≥ 2.27. |
+| **Clang/LLVM** stable | `LLVM-<version>-Linux-{X64,ARM64}.tar.xz` from `llvm/llvm-project` releases, unmodified: clang, clang++, ld.lld, lldb and the libc++ headers/libraries | SHA-256 from the GitHub release asset digest, which must equal the digest named by the release's SLSA build-provenance bundle (`<asset>.jsonl`); `gh attestation verify --repo llvm/llvm-project` verifies that bundle's signature; bytes re-hashed; `clang --version`, `clang++ --version`, `ld.lld --version` and `lldb --version` run on the native runner (`runtime.env` sets `LD_LIBRARY_PATH=<prefix>/lib` so lldb finds `liblldb.so`). Built on Ubuntu 22.04, needs glibc ≥ 2.34. |
+| **Flutter** stable | Official Google Flutter Linux SDK archives (`storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_<version>-stable.tar.xz`), unmodified; includes the Dart SDK (`flutter`, `dart`) | SHA-256 from Google's `releases_linux.json`; size from the storage object (HEAD); bytes re-hashed; `flutter --version` and `dart --version` run on the native runner. Google publishes **x86_64 Linux host archives only**, so linux-aarch64 has no artifact and the manifest notes the explicit reason. The SDK writes its cache inside `<prefix>/bin/cache`; needs glibc ≥ 2.31. |
+| **Composer** stable | Single-file `composer.phar` from `composer/composer` releases; installed read-only as `<prefix>/composer.phar` with a generated `bin/composer` shell wrapper (`exec php "$root/composer.phar" "$@"`) — the phar is never executed by the installer | SHA-256 from the GitHub release asset digest, which must equal getcomposer.org's published `composer.phar.sha256sum`; bytes re-hashed; `composer --version` runs through the generated wrapper with the PHP CLI on PATH. Requires a PHP CLI (e.g. the PHP runtime in this catalog) on PATH. |
+| **Zig** stable | Official `ziglang.org/download/<version>/zig-<arch>-linux-<version>.tar.xz`, unmodified | SHA-256 and size from the official `index.json`; bytes re-hashed; `zig version` runs. The executable is statically linked and sits at the prefix root. |
+| **Kotlin** stable | `kotlin-compiler-<version>.zip` from `JetBrains/kotlin` releases (architecture independent, runs on a JVM) | SHA-256 from the GitHub release asset digest, which must equal the published `.zip.sha256`; bytes re-hashed; `kotlinc -version` runs with the JDK on PATH. |
+| **CMake** stable | `cmake-<version>-linux-{x86_64,aarch64}.tar.gz` from `Kitware/CMake` releases, unmodified | SHA-256 from the GitHub release asset digest, which must equal the release `SHA-256.txt` (the release also publishes an OpenPGP `.asc` signature for that file, which is not pinned here); bytes re-hashed; `cmake --version` and `ctest --version` run. |
+| **Gradle** stable | `gradle-<version>-bin.zip` from the official `services.gradle.org` distribution (served through GitHub release assets), architecture independent | SHA-256 from Gradle's version metadata (`/versions/all`), which must equal the published `<zip>.sha256`; bytes re-hashed; `gradle --version` runs with the JDK on PATH. |
+| **Apache Maven** 3.10 | `apache-maven-<version>-bin.tar.gz` from the official Apache archive (`archive.apache.org`), architecture independent | SHA-512 from Apache's published `.sha512`; bytes re-hashed; the manifest pins the computed SHA-256 of the downloaded bytes; `mvn --version` runs with the JDK on PATH. |
 
 Targets: `linux-x86_64` (ubuntu-24.04 runners) and `linux-aarch64`
 (ubuntu-24.04-arm runners). Each artifact is extracted and executed on a
-native runner of its target before it is published.
+native runner of its target before it is published. The JVM-based providers
+(Kotlin, Gradle, Maven), Composer's wrapper and the Flutter checks use the
+tools already present on the GitHub-hosted runners (JDK 17+ and PHP 8.3 are
+preinstalled); Flutter's SDK cache is written inside the extracted tree, which
+is writable in the verify job. Every executable is exposed on `PATH` in RAST
+Terminal shells through `runtime.pathDirs`/`runtime.env`. The Clang/LLVM
+archive expands to ~11.6 GiB, so the verify job first removes preinstalled
+toolchains it never uses (Android SDK, .NET) to keep enough free space on the
+14 GB runner.
+
+### Database servers are not managed runtimes
+
+MySQL and PostgreSQL **servers** are not part of this catalog: they are
+stateful system daemons with their own data directories, users, upgrades and
+service management. Install them from the operating system packages
+(`mysql-server`/`mariadb-server`, `postgresql`) and manage them with systemd;
+the Package Center catalog only ships read-only, side-by-side language/tool
+runtimes. (A PostgreSQL/MySQL *client* could be added later if needed.)
 
 ### PHP extensions and host dependencies
 
@@ -62,9 +88,10 @@ hours and on demand:
 
 1. **discover** — fetch and verify the published catalog; query go.dev,
    nodejs.org, the python-build-standalone release, php.net, the Rust stable
-   channel manifest, the Adoptium API, the Bun/Deno GitHub releases and the
-   Microsoft .NET release metadata; keep the newest patch(es) of each tracked
-   channel (`catalog.config.json`).
+   channel manifest, the Adoptium API, the Bun/Deno/LLVM/Kotlin/CMake GitHub
+   releases, Google's Flutter release metadata, the ziglang.org download
+   index, Gradle's version metadata and the Apache Maven archive listing; keep
+   the newest patch(es) of each tracked channel (`catalog.config.json`).
 2. **announce** — if anything is new, publish a catalog (sequence + 1) that
    lists it under `detected` with state `verifying` or `building`. RAST shows
    this as **"New upstream version detected"**; it is not installable yet.
@@ -84,11 +111,13 @@ before, the previous manifest is kept and the run summary says so.
 
 > **Release sequencing:** the Rust, Temurin, Bun, Deno and .NET providers use
 > the multi-archive/zip manifest fields and `runtime.env`/`runtime.pathDirs`
-> added in RAST 0.14.0. Old RAST binaries (including the current workflow pin)
-> do not parse those manifests, so the workflow's `RAST_VERSION` pin and this
-> repository's `minRastVersion` must both move to `0.14.0` when that release is
-> tagged — not before. Until then the pinned binary only publishes the
-> existing Python/PHP/Go/Node.js providers.
+> added in RAST 0.14.0, and the Clang, Flutter, Composer, Zig, Kotlin, CMake,
+> Gradle and Maven providers additionally need the `format: "tar.xz"` and
+> `format: "phar"` manifest extensions. Old RAST binaries (including the
+> current workflow pin) do not parse those manifests, so the workflow's
+> `RAST_VERSION` pin and this repository's `minRastVersion` must move together
+> with the release that ships them — not before. Until then the pinned binary
+> cannot publish the providers that need the newer manifest fields.
 
 Manual run options: `withhold` (e.g. `go@1.26.11`) keeps a version out of the
 catalog; `force` re-verifies versions already listed. To rebuild a version,

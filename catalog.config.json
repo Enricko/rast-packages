@@ -8,7 +8,7 @@
   "repository": "https://github.com/Enricko/rast-packages",
   "keyId": "rast-official-2026-11",
   "publicKey": "keys/rast-official-2026-11.pub.pem",
-  "minRastVersion": "0.14.2",
+  "minRastVersion": "0.15.0",
   "expiresDays": 30,
   "refreshBeforeDays": 10,
   "allowedHosts": [
@@ -18,7 +18,11 @@
     "builds.dotnet.microsoft.com",
     "github.com",
     "release-assets.githubusercontent.com",
-    "objects.githubusercontent.com"
+    "objects.githubusercontent.com",
+    "storage.googleapis.com",
+    "ziglang.org",
+    "services.gradle.org",
+    "archive.apache.org"
   ],
   "targets": {
     "linux-x86_64": {
@@ -30,7 +34,11 @@
       "javaArch": "x64",
       "bunArch": "x64",
       "denoArch": "x86_64",
-      "dotnetRid": "linux-x64"
+      "dotnetRid": "linux-x64",
+      "clangArch": "X64",
+      "flutterArch": "x64",
+      "cmakeArch": "x86_64",
+      "zigArch": "x86_64"
     },
     "linux-aarch64": {
       "runner": "ubuntu-24.04-arm",
@@ -41,7 +49,11 @@
       "javaArch": "aarch64",
       "bunArch": "aarch64",
       "denoArch": "aarch64",
-      "dotnetRid": "linux-arm64"
+      "dotnetRid": "linux-arm64",
+      "clangArch": "ARM64",
+      "flutterArch": "arm64",
+      "cmakeArch": "aarch64",
+      "zigArch": "aarch64"
     }
   },
   "withheld": [],
@@ -219,8 +231,8 @@
       ]
     },
     "dotnet": {
-      "name": ".NET SDK",
-      "description": "Microsoft .NET SDK with the included .NET and ASP.NET Core runtimes, from the official Microsoft release metadata (active LTS and STS channels), with hashes taken from that metadata.",
+      "name": ".NET SDK (C#/.NET)",
+      "description": "Microsoft .NET SDK with the included .NET and ASP.NET Core runtimes, providing the C# (and F#/VB) toolchain, from the official Microsoft release metadata (active LTS and STS channels), with hashes taken from that metadata.",
       "homepage": "https://dotnet.microsoft.com",
       "license": "MIT",
       "keepPatches": 1,
@@ -234,6 +246,119 @@
           "id": "11.0",
           "label": ".NET 11 (STS, current)",
           "status": "STS (current)"
+        }
+      ]
+    },
+    "clang": {
+      "name": "Clang/LLVM",
+      "description": "Clang C/C++ compilers with the LLVM toolchain (clang, clang++, ld.lld, lldb, libc++ libraries and headers) from the official LLVM Linux release binaries, verified against the GitHub asset digest and the release's SLSA build-provenance attestation bundle.",
+      "homepage": "https://llvm.org",
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "channels": [
+        {
+          "id": "stable",
+          "label": "LLVM/Clang stable",
+          "status": "stable"
+        }
+      ]
+    },
+    "flutter": {
+      "name": "Flutter",
+      "description": "Flutter SDK (with its bundled Dart SDK: flutter and dart) from the official Google Flutter Linux release archives, verified against the SHA-256 in Google's releases_linux.json. Google publishes x86_64 Linux host archives only.",
+      "homepage": "https://flutter.dev",
+      "license": "BSD-3-Clause",
+      "keepPatches": 2,
+      "channels": [
+        {
+          "id": "stable",
+          "label": "Flutter stable",
+          "status": "stable"
+        }
+      ]
+    },
+    "composer": {
+      "name": "Composer",
+      "description": "Composer PHP dependency manager: the verified composer.phar (GitHub asset digest cross-checked against getcomposer.org's SHA-256) plus a generated bin/composer wrapper that runs it with the PHP CLI on PATH.",
+      "homepage": "https://getcomposer.org",
+      "license": "MIT",
+      "keepPatches": 2,
+      "channels": [
+        {
+          "id": "stable",
+          "label": "Composer stable",
+          "status": "stable"
+        }
+      ]
+    },
+    "zig": {
+      "name": "Zig",
+      "description": "Zig compiler and build tool from the official ziglang.org Linux archives, verified against the SHA-256 and size in the official download index.",
+      "homepage": "https://ziglang.org",
+      "license": "MIT",
+      "keepPatches": 2,
+      "channels": [
+        {
+          "id": "stable",
+          "label": "Zig stable",
+          "status": "stable"
+        }
+      ]
+    },
+    "kotlin": {
+      "name": "Kotlin",
+      "description": "Kotlin command-line compiler (kotlinc and kotlin) from the official JetBrains/kotlin releases, verified against the GitHub asset digest and the published .zip.sha256; needs a JDK on PATH.",
+      "homepage": "https://kotlinlang.org",
+      "license": "Apache-2.0",
+      "keepPatches": 1,
+      "channels": [
+        {
+          "id": "stable",
+          "label": "Kotlin stable",
+          "status": "stable"
+        }
+      ]
+    },
+    "cmake": {
+      "name": "CMake",
+      "description": "CMake, CTest and CPack from the official Kitware Linux release archives, verified against the GitHub asset digest and the release's SHA-256.txt.",
+      "homepage": "https://cmake.org",
+      "license": "BSD-3-Clause",
+      "keepPatches": 2,
+      "channels": [
+        {
+          "id": "stable",
+          "label": "CMake stable",
+          "status": "stable"
+        }
+      ]
+    },
+    "gradle": {
+      "name": "Gradle",
+      "description": "Gradle build tool from the official services.gradle.org distribution, verified against Gradle's published .sha256; needs a JDK on PATH.",
+      "homepage": "https://gradle.org",
+      "license": "Apache-2.0",
+      "keepPatches": 2,
+      "channels": [
+        {
+          "id": "stable",
+          "label": "Gradle stable",
+          "status": "stable"
+        }
+      ]
+    },
+    "maven": {
+      "name": "Apache Maven",
+      "description": "Apache Maven build tool from the official Apache archive, verified against Apache's published .sha512; needs a JDK on PATH.",
+      "homepage": "https://maven.apache.org",
+      "license": "Apache-2.0",
+      "keepPatches": 2,
+      "channels": [
+        {
+          "id": "3.10",
+          "label": "Apache Maven 3.10",
+          "status": "stable"
         }
       ]
     }
