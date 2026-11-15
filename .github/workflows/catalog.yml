@@ -20,6 +20,10 @@ on:
         description: "Re-verify versions that are already in the catalog"
         type: boolean
         default: false
+      republish:
+        description: "Publish a fresh signed catalog even when no version changed (e.g. metadata/icon update)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -183,7 +187,7 @@ jobs:
 
   publish:
     needs: [discover, verify, php]
-    if: ${{ !cancelled() && needs.discover.outputs.changed == 'true' }}
+    if: ${{ !cancelled() && (needs.discover.outputs.changed == 'true' || inputs.republish) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
