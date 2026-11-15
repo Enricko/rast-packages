@@ -19,7 +19,9 @@ RAST reads one file: the **signed catalog** attached to the
 
 * `catalog.json` — every installable version as a full `rast-package.json`
   manifest (schema: [`schema/rast-package.schema.json`](schema/rast-package.schema.json)),
-  plus upstream versions that were *detected* but are not verified yet.
+  plus upstream versions that were *detected* but are not verified yet. Each
+  package entry also carries its official runtime icon (base64-embedded; see
+  [Icons](#icons)).
 * `catalog.json.sig` — Ed25519 signature over the exact bytes of
   `catalog.json`, key id `rast-official-2026-11`
   ([public key](keys/rast-official-2026-11.pub.pem); RAST embeds it).
@@ -28,6 +30,40 @@ RAST reads one file: the **signed catalog** attached to the
 
 Every artifact is pinned by SHA-256 and size, and its host must be listed in
 the catalog's `allowedHosts` (checked by RAST on every redirect).
+
+## Icons
+
+Every official runtime carries its official programming-language/runtime logo,
+so the Package Center can show the familiar brand mark next to it:
+
+* `catalog.config.json` gives each `packages.<id>` entry an `icon` field, a
+  path to a local `.svg` or `.png` file (`"icon": "icons/python.svg"`). The
+  path is resolved relative to the configuration file (absolute paths also
+  work) and the file is limited to 64 KiB.
+* `rast catalog discover`/`interim`/`assemble` load that local file, validate
+  it with RAST's own icon rules (media type, strict base64, size, no active
+  SVG content) and embed it **base64** in the package entry of every catalog
+  the workflow publishes — E.g.:
+
+  ```json
+  "icon": {
+    "mediaType": "image/svg+xml",
+    "data": "PHN2ZyByb2xlPSJpbWci..."
+  }
+  ```
+
+  The catalog source is the local file only; nothing is fetched at runtime
+  and RAST never downloads an icon separately.
+* The files in [`icons/`](icons/) are the official
+  [Simple Icons](https://simpleicons.org/) brand marks (CC0). All trademarks
+  and logos belong to their respective owners; they are used here only to
+  identify the runtime they represent. The SVG files are unmodified (Simple
+  Icons paths use `currentColor`), and no recolor is applied.
+* Package authors can embed an icon too: a `rast-package.json` manifest may
+  carry the same `icon` object (`image/svg+xml` or `image/png`, decoded image
+  1 byte to 64 KiB, optional `attribution` of at most 300 characters). The
+  authoring tooling can add one from a local file; see
+  [`schema/rast-package.schema.json`](schema/rast-package.schema.json).
 
 ## Sources and verification
 

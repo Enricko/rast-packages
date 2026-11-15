@@ -8,7 +8,7 @@
   "repository": "https://github.com/Enricko/rast-packages",
   "keyId": "rast-official-2026-11",
   "publicKey": "keys/rast-official-2026-11.pub.pem",
-  "minRastVersion": "0.15.2",
+  "minRastVersion": "0.16.0",
   "expiresDays": 30,
   "refreshBeforeDays": 10,
   "allowedHosts": [
@@ -64,6 +64,7 @@
       "description": "CPython interpreter with pip, from the python-build-standalone project (relocatable install_only builds).",
       "homepage": "https://www.python.org",
       "license": "PSF-2.0",
+      "icon": "icons/python.svg",
       "keepPatches": 1,
       "channels": [
         {
@@ -88,6 +89,7 @@
       "description": "Static PHP command-line interpreter built in CI from php.net sources with static-php-cli (musl, no host libraries needed).",
       "homepage": "https://www.php.net",
       "license": "PHP-3.01",
+      "icon": "icons/php.svg",
       "keepPatches": 1,
       "spcVersion": "2.8.5",
       "builder": "alpine:3.22",
@@ -110,6 +112,7 @@
       "description": "The Go toolchain (go, gofmt) from the official go.dev Linux archives.",
       "homepage": "https://go.dev",
       "license": "BSD-3-Clause",
+      "icon": "icons/go.svg",
       "keepPatches": 2,
       "channels": [
         {
@@ -129,6 +132,7 @@
       "description": "Node.js JavaScript runtime with its bundled npm and npx, from the official nodejs.org Linux archives (LTS lines).",
       "homepage": "https://nodejs.org",
       "license": "MIT",
+      "icon": "icons/nodedotjs.svg",
       "keepPatches": 2,
       "channels": [
         {
@@ -153,6 +157,7 @@
       "description": "The Rust toolchain (rustc, cargo, rust-std, rustfmt, clippy) from the official static.rust-lang.org dist components, installed as one standalone prefix (not rustup).",
       "homepage": "https://www.rust-lang.org",
       "license": "MIT OR Apache-2.0",
+      "icon": "icons/rust.svg",
       "keepPatches": 1,
       "channels": [
         {
@@ -167,6 +172,7 @@
       "description": "Eclipse Temurin JDK (HotSpot) LTS and current feature releases from the Adoptium API: java, javac, jar and jshell, with JAVA_HOME pointing at the version prefix.",
       "homepage": "https://adoptium.net",
       "license": "GPL-2.0 WITH Classpath-exception-2.0",
+      "icon": "icons/eclipseadoptium.svg",
       "keepPatches": 1,
       "channels": [
         {
@@ -206,6 +212,7 @@
       "description": "Bun JavaScript/TypeScript runtime, bundler and package manager from the official oven-sh/bun GitHub releases, verified against SHASUMS256.txt and the GitHub asset digest.",
       "homepage": "https://bun.com",
       "license": "MIT",
+      "icon": "icons/bun.svg",
       "keepPatches": 2,
       "channels": [
         {
@@ -220,6 +227,7 @@
       "description": "Deno JavaScript/TypeScript runtime from the official denoland/deno GitHub releases, verified against the release .sha256sum files, GitHub asset digests and build-provenance attestations.",
       "homepage": "https://deno.com",
       "license": "MIT",
+      "icon": "icons/deno.svg",
       "keepPatches": 2,
       "githubAttestations": true,
       "channels": [
@@ -235,6 +243,7 @@
       "description": "Microsoft .NET SDK with the included .NET and ASP.NET Core runtimes, providing the C# (and F#/VB) toolchain, from the official Microsoft release metadata (active LTS and STS channels), with hashes taken from that metadata.",
       "homepage": "https://dotnet.microsoft.com",
       "license": "MIT",
+      "icon": "icons/dotnet.svg",
       "keepPatches": 1,
       "channels": [
         {
@@ -254,6 +263,7 @@
       "description": "Clang C/C++ compilers with the LLVM toolchain (clang, clang++, ld.lld, lldb, libc++ libraries and headers) from the official LLVM Linux release binaries, verified against the GitHub asset digest and the release's SLSA build-provenance attestation bundle.",
       "homepage": "https://llvm.org",
       "license": "Apache-2.0 WITH LLVM-exception",
+      "icon": "icons/llvm.svg",
       "keepPatches": 1,
       "githubAttestations": true,
       "channels": [
@@ -269,6 +279,7 @@
       "description": "Flutter SDK (with its bundled Dart SDK: flutter and dart) from the official Google Flutter Linux release archives, verified against the SHA-256 in Google's releases_linux.json. Google publishes x86_64 Linux host archives only.",
       "homepage": "https://flutter.dev",
       "license": "BSD-3-Clause",
+      "icon": "icons/flutter.svg",
       "keepPatches": 2,
       "channels": [
         {
@@ -283,6 +294,7 @@
       "description": "Composer PHP dependency manager: the verified composer.phar (GitHub asset digest cross-checked against getcomposer.org's SHA-256) plus a generated bin/composer wrapper that runs it with the PHP CLI on PATH.",
       "homepage": "https://getcomposer.org",
       "license": "MIT",
+      "icon": "icons/composer.svg",
       "keepPatches": 2,
       "channels": [
         {
@@ -297,6 +309,7 @@
       "description": "Zig compiler and build tool from the official ziglang.org Linux archives, verified against the SHA-256 and size in the official download index.",
       "homepage": "https://ziglang.org",
       "license": "MIT",
+      "icon": "icons/zig.svg",
       "keepPatches": 2,
       "channels": [
         {
@@ -311,6 +324,7 @@
       "description": "Kotlin command-line compiler (kotlinc and kotlin) from the official JetBrains/kotlin releases, verified against the GitHub asset digest and the published .zip.sha256; needs a JDK on PATH.",
       "homepage": "https://kotlinlang.org",
       "license": "Apache-2.0",
+      "icon": "icons/kotlin.svg",
       "keepPatches": 1,
       "channels": [
         {
@@ -325,6 +339,7 @@
       "description": "CMake, CTest and CPack from the official Kitware Linux release archives, verified against the GitHub asset digest and the release's SHA-256.txt.",
       "homepage": "https://cmake.org",
       "license": "BSD-3-Clause",
+      "icon": "icons/cmake.svg",
       "keepPatches": 2,
       "channels": [
         {
@@ -339,6 +354,7 @@
       "description": "Gradle build tool from the official services.gradle.org distribution, verified against Gradle's published .sha256; needs a JDK on PATH.",
       "homepage": "https://gradle.org",
       "license": "Apache-2.0",
+      "icon": "icons/gradle.svg",
       "keepPatches": 2,
       "channels": [
         {
@@ -353,6 +369,7 @@
       "description": "Apache Maven build tool from the official Apache archive, verified against Apache's published .sha512; needs a JDK on PATH.",
       "homepage": "https://maven.apache.org",
       "license": "Apache-2.0",
+      "icon": "icons/apachemaven.svg",
       "keepPatches": 2,
       "channels": [
         {
