@@ -54,11 +54,14 @@ so the Package Center can show the familiar brand mark next to it:
 
   The catalog source is the local file only; nothing is fetched at runtime
   and RAST never downloads an icon separately.
-* The files in [`icons/`](icons/) are the official
-  [Simple Icons](https://simpleicons.org/) brand marks (CC0). All trademarks
-  and logos belong to their respective owners; they are used here only to
-  identify the runtime they represent. The SVG files are unmodified (Simple
-  Icons paths use `currentColor`), and no recolor is applied.
+* The files in [`icons/`](icons/) are the full-colour logos from
+  [Devicon](https://devicon.dev/) (MIT License, Copyright (c) 2015 konpa),
+  unmodified. Two have no Devicon logo and use the
+  [Simple Icons](https://simpleicons.org/) (CC0) mark instead: Eclipse Temurin
+  (filled with the Adoptium brand colour) and .NET (white on the .NET purple).
+  All trademarks and logos belong to their respective owners; they are used
+  here only to identify the runtime they represent. RAST draws them on a light
+  plate, so dark marks (Rust, Deno, Gradle) stay readable in a dark theme.
 * Package authors can embed an icon too: a `rast-package.json` manifest may
   carry the same `icon` object (`image/svg+xml` or `image/png`, decoded image
   1 byte to 64 KiB, optional `attribution` of at most 300 characters). The
