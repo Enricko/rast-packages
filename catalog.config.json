@@ -8,7 +8,7 @@
   "repository": "https://github.com/Enricko/rast-packages",
   "keyId": "rast-official-2026-11",
   "publicKey": "keys/rast-official-2026-11.pub.pem",
-  "minRastVersion": "0.15.1",
+  "minRastVersion": "0.15.2",
   "expiresDays": 30,
   "refreshBeforeDays": 10,
   "allowedHosts": [
