@@ -82,7 +82,7 @@ so the Package Center can show the familiar brand mark next to it:
 | **Deno** stable | Official `denoland/deno` GitHub release `deno-{x86_64,aarch64}-unknown-linux-gnu.zip`, unmodified | GitHub asset SHA-256 digest must equal the published per-asset `.sha256sum`; the GitHub release attestation (in-toto release predicate) is confirmed for this exact artifact digest through the GitHub attestations API (GitHub CLI reports no attestations for this predicate); bytes re-hashed; `deno --version` runs. Needs glibc ≥ 2.27. |
 | **.NET SDK** 10.0 LTS / 11.0 STS | Microsoft `dotnet-sdk-<version>-linux-{x64,arm64}.tar.gz` from the official release metadata (`builds.dotnet.microsoft.com`), unmodified; the SDK archive includes the .NET and ASP.NET Core runtimes and provides the C# toolchain | SHA-512 of every archive must match the hash in Microsoft's `releases.json` release metadata; the manifest pins the computed SHA-256 of the downloaded bytes; `dotnet --version`, `dotnet --list-sdks` and `dotnet --list-runtimes` run on the native runner. Needs glibc ≥ 2.27. |
 | **Clang/LLVM** stable | `LLVM-<version>-Linux-{X64,ARM64}.tar.xz` from `llvm/llvm-project` releases, unmodified: clang, clang++, ld.lld, lldb (shipped) and the libc++ headers/libraries | SHA-256 from the GitHub release asset digest, which must equal the digest named by the release's SLSA build-provenance bundle (`<asset>.jsonl`); `gh attestation verify --repo llvm/llvm-project` verifies that bundle's signature; bytes re-hashed; `clang --version`, `clang++ --version` and `ld.lld --version` run on the native runner (`runtime.env` sets `LD_LIBRARY_PATH=<prefix>/lib`). `lldb` is shipped but not executed in CI because the official build needs a host libpython shared object (e.g. `libpython3.14.so.1.0` on the release runner); install the matching python3 library to use lldb — clang/clang++/ld.lld work without it. Built on Ubuntu 22.04, needs glibc ≥ 2.34. |
-| **Flutter** stable | Official Google Flutter Linux SDK archives (`storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_<version>-stable.tar.xz`), unmodified; includes the Dart SDK (`flutter`, `dart`) | SHA-256 from Google's `releases_linux.json`; size from the storage object (HEAD); bytes re-hashed; `flutter --version` and `dart --version` run on the native runner. Google publishes **x86_64 Linux host archives only**, so linux-aarch64 has no artifact and the manifest notes the explicit reason. The SDK writes its cache inside `<prefix>/bin/cache`; needs glibc ≥ 2.31. |
+| **Flutter** stable | Official Google Flutter Linux SDK archives (`storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_<version>-stable.tar.xz`), unmodified; includes the Dart SDK (`flutter`, `dart`) | SHA-256 from Google's `releases_linux.json`; size from the storage object (HEAD); bytes re-hashed; `flutter --version` and `dart --version` run on the native runner. Google publishes **x86_64 Linux host archives only**, so linux-aarch64 has no artifact and the manifest notes the explicit reason. The SDK writes into its own tree on every start, so its manifest sets `runtime.mirror` (RAST ≥ 0.9.8): each user runs it from a mirror in `~/.cache/rast-sdk` built by generated launchers, and the checks run through those launchers; needs glibc ≥ 2.31. |
 | **Composer** stable | Single-file `composer.phar` from `composer/composer` releases; installed read-only as `<prefix>/composer.phar` with a generated `bin/composer` shell wrapper (`exec php "$root/composer.phar" "$@"`) — the phar is never executed by the installer | SHA-256 from the GitHub release asset digest, which must equal getcomposer.org's published `composer.phar.sha256sum`; bytes re-hashed; `composer --version` runs through the generated wrapper with the PHP CLI on PATH. Requires a PHP CLI (e.g. the PHP runtime in this catalog) on PATH. |
 | **Zig** stable | Official `ziglang.org/download/<version>/zig-<arch>-linux-<version>.tar.xz`, unmodified | SHA-256 and size from the official `index.json`; bytes re-hashed; `zig version` runs. The executable is statically linked and sits at the prefix root. |
 | **Kotlin** stable | `kotlin-compiler-<version>.zip` from `JetBrains/kotlin` releases (architecture independent, runs on a JVM) | SHA-256 from the GitHub release asset digest, which must equal the published `.zip.sha256`; bytes re-hashed; `kotlinc -version` runs with the JDK on PATH. |
@@ -95,8 +95,8 @@ Targets: `linux-x86_64` (ubuntu-24.04 runners) and `linux-aarch64`
 native runner of its target before it is published. The JVM-based providers
 (Kotlin, Gradle, Maven), Composer's wrapper and the Flutter checks use the
 tools already present on the GitHub-hosted runners (JDK 17+ and PHP 8.3 are
-preinstalled); Flutter's SDK cache is written inside the extracted tree, which
-is writable in the verify job. Every executable is exposed on `PATH` in RAST
+preinstalled); Flutter's checks run through its `runtime.mirror` launchers,
+as they do on a server, so a read-only install is what gets verified. Every executable is exposed on `PATH` in RAST
 Terminal shells through `runtime.pathDirs`/`runtime.env`. The Clang/LLVM
 archive expands to ~11.6 GiB, so the verify job first removes preinstalled
 toolchains it never uses (Android SDK, .NET) to keep enough free space on the
@@ -149,14 +149,17 @@ manifest throughout; if re-verification fails, or covers fewer targets than
 before, the previous manifest is kept and the run summary says so.
 
 > **Release sequencing:** the Rust, Temurin, Bun, Deno and .NET providers use
-> the multi-archive/zip manifest fields and `runtime.env`/`runtime.pathDirs`
-> added in RAST 0.14.0, and the Clang, Flutter, Composer, Zig, Kotlin, CMake,
-> Gradle and Maven providers additionally need the `format: "tar.xz"` and
-> `format: "phar"` manifest extensions. Old RAST binaries (including the
-> current workflow pin) do not parse those manifests, so the workflow's
-> `RAST_VERSION` pin and this repository's `minRastVersion` must move together
-> with the release that ships them — not before. Until then the pinned binary
-> cannot publish the providers that need the newer manifest fields.
+> the multi-archive/zip manifest fields and `runtime.env`/`runtime.pathDirs`,
+> and the Clang, Flutter, Composer, Zig, Kotlin, CMake, Gradle and Maven
+> providers additionally need the `format: "tar.xz"` and `format: "phar"`
+> manifest extensions. RAST's version line restarted after 0.9.1 (the
+> 0.10–0.18 releases were withdrawn on 2026-11-25), and these features came
+> back in **RAST 0.9.8**, which also ships the `rast catalog` commands. The
+> workflow's `RAST_VERSION` pin and this repository's `minRastVersion` move
+> together with the release that ships a manifest feature — not before.
+> Moving `minRastVersion` re-publishes nothing by itself: bump the revisions
+> of versions already listed (as in `catalog.config.json`) so they are
+> verified again under the new value.
 
 Manual run options: `withhold` (e.g. `go@1.26.11`) keeps a version out of the
 catalog; `force` re-verifies versions already listed. To rebuild a version,
@@ -172,12 +175,12 @@ with `packages_catalog_keys` in `rast.toml`.
 
 ## Local development
 
-Download the Rust tool once (replace `v0.11.6` with the release named in the
+Download the Rust tool once (replace `v0.9.8` with the release named in the
 workflow) and run the catalog commands from the repository root:
 
 ```sh
 mkdir -p bin
-curl -fsSL -o bin/rast https://github.com/Enricko/rast/releases/download/v0.11.6/rast-linux-x86_64
+curl -fsSL -o bin/rast https://github.com/Enricko/rast/releases/download/v0.9.8/rast-linux-x86_64
 chmod +x bin/rast
 
 ./bin/rast catalog previous --out work/previous
