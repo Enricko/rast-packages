@@ -46,6 +46,7 @@ pub fn routes() -> Router<Agent> {
         .route("/api/ai/conversations/{id}/messages", post(send_message))
         .route("/api/ai/files", post(upload_file))
         .route("/api/ai/files/{id}", get(get_file).delete(delete_file))
+        .route("/api/ai/view", get(view_url))
         .route("/api/ai/conversations/{id}/stop", post(stop_reply))
         .route("/api/ai/conversations/{id}/retry", post(retry_now))
         .route(
@@ -861,7 +862,8 @@ async fn get_file(
         .map_err(|_| AppError::NotFound("file not found"))?;
     let (mime, disposition) = match file.kind.as_str() {
         "image" => (file.mime.as_str(), "inline"),
-        "pdf" => ("application/pdf", "attachment"),
+        // Inline: the viewer beside the chat shows it (sandboxed below).
+        "pdf" => ("application/pdf", "inline"),
         _ => ("text/plain; charset=utf-8", "attachment"),
     };
     let ascii: String = file
@@ -906,6 +908,92 @@ async fn get_file(
         HeaderValue::from_static("default-src 'none'; sandbox"),
     );
     private(&mut response);
+    Ok(response)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ViewQuery {
+    url: String,
+}
+
+/// The policy of what the viewer opens: no scripts and nothing else loaded,
+/// also when opened as a page (as RAST's File Station previews).
+const VIEW_CSP: &str = "sandbox; default-src 'none'; img-src 'self' data: blob:; \
+media-src 'self'; style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; \
+form-action 'none'; frame-ancestors 'self'";
+
+/// GET /api/ai/view?url= — an image, video or PDF on the public web, for
+/// the viewer beside the chat (see [`ai::view`]); a `Range` is passed on.
+async fn view_url(
+    _user: AuthUser,
+    Query(query): Query<ViewQuery>,
+    request_headers: HeaderMap,
+) -> AppResult<Response> {
+    if query.url.len() > 4096 {
+        return Err(AppError::bad_request("the address is too long"));
+    }
+    let range = request_headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let media = tokio::task::spawn_blocking(move || ai::view::open(&query.url, range.as_deref()))
+        .await
+        .map_err(|e| AppError::internal(format!("the viewer stopped: {e}")))?
+        .map_err(AppError::bad_request)?;
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(4);
+    let mut body = media.body;
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match body.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    // The page went away: stop reading the site.
+                    if tx
+                        .blocking_send(Ok(axum::body::Bytes::copy_from_slice(&buf[..n])))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(e));
+                    break;
+                }
+            }
+        }
+    });
+    let mut response = Response::new(Body::from_stream(
+        tokio_stream::wrappers::ReceiverStream::new(rx),
+    ));
+    *response.status_mut() = if media.status == 206 {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+    let h = response.headers_mut();
+    let mut set = |name: header::HeaderName, value: &str| {
+        if let Ok(value) = HeaderValue::from_str(value) {
+            h.insert(name, value);
+        }
+    };
+    set(header::CONTENT_TYPE, &media.content_type);
+    if let Some(length) = media.length {
+        set(header::CONTENT_LENGTH, &length.to_string());
+    }
+    if let Some(range) = &media.content_range {
+        set(header::CONTENT_RANGE, range);
+    }
+    if media.accepts_ranges {
+        set(header::ACCEPT_RANGES, "bytes");
+    }
+    set(header::CACHE_CONTROL, "private, max-age=300");
+    set(header::CONTENT_DISPOSITION, "inline");
+    set(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+    set(header::REFERRER_POLICY, "no-referrer");
+    set(header::CONTENT_SECURITY_POLICY, VIEW_CSP);
     Ok(response)
 }
 

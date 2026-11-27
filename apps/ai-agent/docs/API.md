@@ -190,6 +190,7 @@ ends the request (its calls become `skipped`). Each call that runs is audited
 | POST | `/api/ai/conversations/{id}/messages` | `{text}` (≤ 100 KiB): stores it and starts the reply in the background; returns `{conversation, message, reply}` (`reply.status:"streaming"`). `409` while a reply is running, `429` (with `Retry-After`) once the allowance is used, `403` for a provider the account may not use |
 | POST | `/api/ai/conversations/{id}/stop` | `{stopped}`; the reply keeps what was written (`status:"stopped"`); a reply waiting for tool answers ends too (its calls `skipped`) |
 | POST | `/api/ai/conversations/{id}/retry` | `{retrying}`; a reply waiting to try a step again (see *Trying again* below) tries it now |
+| GET | `/api/ai/view?url=` | an image, video or PDF on the web for the viewer beside the chat (see *The viewer* below); `400` with the reason for anything else |
 | GET | `/api/ai/conversations/{id}/artifacts/{callId}` | an `html` or `svg` artifact (a finished `artifact` call) as a page, for whoever may read the chat; `Content-Security-Policy: sandbox allow-scripts …` without `allow-same-origin` (an opaque origin: no cookies, storage or RAST API), `default-src 'none'`, scripts and styles inline or from cdnjs, jsDelivr, unpkg and esm.sh, `frame-ancestors 'self'`; `X-Frame-Options: SAMEORIGIN`. Other kinds `404` (the app shows them) |
 | POST | `/api/ai/conversations/{id}/tools/{callId}` | owner only: `{decision:"allow"\|"deny", always?}` → `{message, conversation}`; once no call is `pending` the reply goes on (checked like a new message: `429`, `403`, …). `409` when the chat is not waiting or the call was answered |
 | GET | `/api/ai/admin/overview` | admin: `{kinds:[{id, label, defaultBaseUrl, needsKey, group, keyUrl, about, signsIn, signInFlow, site, callbackHint, risk}], providers, agents, skills, limits, users, groups, usage:[{userId, today, week, month, costToday, costWeek, costMonth, lastAt}], tools:[{name, label}], search, serverAccess}` (`signsIn`, `signInFlow:"browser"\|"device"\|""`, `site`, `callbackHint` and `risk` are set for the plan kinds: see above) |
@@ -242,3 +243,27 @@ step had written is taken back first. While it waits, the reply's message
 left in milliseconds when it was sent, and what failed. Stop ends the wait
 (`status:"stopped"`); `POST …/retry` starts the try now. After the tenth the
 reply ends `error`, saying it tried again 10 times.
+
+### The viewer
+
+Pictures, videos and PDFs named in a chat open in a panel beside it (the
+artifact panel's place), without leaving the conversation: links in an
+answer (`[…](https://…/a.pdf)`, `![…](…)`, bare addresses), paths in the
+person's files (`[report](/shared/team/q3.pdf)` or `` `/clips/demo.mp4` ``),
+a finished `read_file`/`write_file` call (**View**), and pictures and PDFs
+sent in the chat. The kind comes from the extension: png, jpg/jpeg, gif,
+webp, avif, bmp, svg, ico; mp4, m4v, webm, ogv, mov; pdf.
+
+- A path opens with the person's own access through RAST: pictures and PDFs
+  from `GET /api/files/preview`, videos from `GET /api/files/download`
+  (ranges, so they seek). A path that is not there or theirs says so.
+- A chat file comes from `GET /api/ai/files/{id}`; PDFs are served `inline`
+  with a `sandbox` CSP.
+- A web address goes through `GET /api/ai/view?url=` (signed in), so the
+  page keeps its strict CSP and the site sees the server, not the person:
+  http(s) to public addresses only (each redirect checked again, at most 6),
+  answers of an image, video or PDF type only, one `bytes=` range passed on
+  (`206` and `Content-Range` back), at most 512 MB, streamed. It answers
+  with the site's type, `Content-Disposition: inline`, `nosniff`,
+  `Referrer-Policy: no-referrer`, `Cache-Control: private, max-age=300` and
+  a `sandbox` CSP.

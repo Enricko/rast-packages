@@ -16,6 +16,8 @@ import { confirmDialog, contextMenu, copyText, dialogOpen, errorMessage, promptD
 import { agentAvatar, providerMark } from "./marks";
 import { artifactCard, createArtifactPane } from "./artifact";
 import { createAttachments, picture, sentFiles } from "./attachments";
+import { viewKindOf, viewOfChatFile, viewOfPath, viewOfUrl, type ViewTarget } from "./view";
+import { createViewerPane } from "./viewer";
 import { formatEstimate } from "./usage";
 import { renderMarkdown } from "./markdown";
 import { showWhatsNew, updateBanner } from "./update";
@@ -275,7 +277,23 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   const settingsHost = h("section", { class: "ai-settings hidden" });
   const scrim = h("div", { class: "ai-scrim" });
   const artifactPane = createArtifactPane(ctx, () => closeArtifact(true));
-  ctx.root.append(side, main, artifactPane.el, settingsHost, scrim);
+  const viewerPane = createViewerPane(ctx, () => closeView());
+  ctx.root.append(side, main, artifactPane.el, viewerPane.el, settingsHost, scrim);
+
+  // The viewer: a picture, video or PDF from the chat, in the artifact
+  // panel's place.
+  function openView(target: ViewTarget): void {
+    if (artifactPane.shown()) artifactPane.close();
+    viewerPane.show(target);
+    ctx.root.classList.add("has-artifact", "is-viewing");
+    ctx.root.classList.remove("ai-side-open");
+  }
+  function closeView(): void {
+    if (!viewerPane.shown()) return;
+    viewerPane.close();
+    ctx.root.classList.remove("is-viewing");
+    if (!artifactPane.shown()) ctx.root.classList.remove("has-artifact");
+  }
 
   // Artifacts: a panel beside the chat. A new one opens by itself while the
   // chat is in view; those already there when a chat opens wait for a click.
@@ -284,6 +302,10 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     if (!current) return;
     const list = chatArtifacts(current.messages);
     if (!list.some((a) => a.callId === callId)) return;
+    if (viewerPane.shown()) {
+      viewerPane.close();
+      ctx.root.classList.remove("is-viewing");
+    }
     artifactPane.show(list, callId, current.conversation.id);
     ctx.root.classList.add("has-artifact");
     ctx.root.classList.remove("ai-side-open");
@@ -498,6 +520,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       if (switching) {
         seenArtifacts = new Set(chatArtifacts(detail.messages).map((a) => a.callId));
         closeArtifact(false);
+        closeView();
       }
       const keep = options_.artifact ?? (switching ? undefined : (artifactPane.shown() ?? undefined));
       if (!detail.readOnly) ctx.saveState(keep ? { conversationId: id, artifact: keep } : { conversationId: id });
@@ -519,6 +542,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   function openNew(): void {
     closeSettings();
     closeArtifact(false);
+    closeView();
     seenArtifacts = new Set();
     loadToken += 1;
     current = null;
@@ -532,6 +556,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   function openSettings(): void {
     if (!isAdmin) return;
     closeArtifact(false);
+    closeView();
     ctx.saveState({ settings: true });
     main.classList.add("hidden");
     settingsHost.classList.remove("hidden");
@@ -1290,6 +1315,19 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         h("span", { class: "ai-tool-icon" }, iconSvg(info?.icon ?? "apps", 14)),
         h("span", { class: "ai-tool-label" }, info?.label ?? block.name),
         h("span", { class: "ai-tool-arg", title: arg }, arg),
+        viewable(block)
+          ? h(
+              "a",
+              {
+                class: "btn btn-ghost btn-sm ai-tool-view ai-view-link",
+                href: "#",
+                title: "Open beside the chat",
+                dataset: { viewPath: String((block.input as { path?: unknown }).path) },
+              },
+              iconSvg("eye", 13),
+              h("span", {}, "View"),
+            )
+          : null,
         h("span", { class: "ai-tool-state small" }, iconSvg(icon, 12), h("span", {}, label)),
       ),
     );
@@ -1368,6 +1406,13 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         ? h("button", { class: "btn btn-sm ai-retry-now", type: "button", onClick: () => void retryNow() }, "Retry now")
         : null,
     );
+  }
+
+  /** A file tool's picture, video or PDF in the person's files, once there. */
+  function viewable(block: ToolBlock): boolean {
+    if (block.status !== "done" || (block.name !== "read_file" && block.name !== "write_file")) return false;
+    const path = (block.input as { path?: unknown } | null)?.path;
+    return typeof path === "string" && viewKindOf(path) !== null && viewOfPath(path) !== null;
   }
 
   function elapsedSince(since: number): HTMLElement {
@@ -1449,6 +1494,23 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   });
   followObserver.observe(thread);
   followObserver.observe(scroller);
+
+  // Links, paths and files in the chat open in the viewer (a click with a
+  // modifier key keeps the browser's way).
+  thread.addEventListener("click", (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const el = (event.target as Element | null)?.closest<HTMLElement>("[data-view-url],[data-view-path],[data-view-file]");
+    if (!el || !thread.contains(el)) return;
+    const data = el.dataset;
+    const target = data.viewUrl
+      ? viewOfUrl(data.viewUrl)
+      : data.viewPath
+        ? viewOfPath(data.viewPath)
+        : viewOfChatFile({ id: data.viewFile ?? "", name: data.viewName ?? "", kind: (data.viewKind ?? "text") as "image" | "pdf" | "text" });
+    if (!target) return;
+    event.preventDefault();
+    openView(target);
+  });
 
   // ---------------------------------------------------------- realtime
   unsubscribers.push(

@@ -5,7 +5,10 @@
 // Blocks: paragraphs, # headings, fenced ``` code, > quotes, - / * / 1.
 // lists (one level of nesting by indentation), | tables |, --- rules.
 // Inline: `code`, **bold**, *italic* / _italic_, ~~strike~~, [text](url),
-// bare http(s) links.
+// bare http(s) links. Pictures, videos and PDFs (links, `![…](…)`, paths in
+// the person's files) are marked for the viewer beside the chat (view.ts).
+
+import { looksLikePath, viewKindOf } from "./view";
 
 export type Inline =
   | { t: "text"; v: string }
@@ -14,6 +17,8 @@ export type Inline =
   | { t: "em"; c: Inline[] }
   | { t: "del"; c: Inline[] }
   | { t: "link"; href: string; c: Inline[] }
+  /** A link to a path in the person's files. */
+  | { t: "file"; path: string; c: Inline[] }
   | { t: "br" };
 
 export interface ListItem {
@@ -269,9 +274,12 @@ export function parseInline(text: string): Inline[] {
         if (end > close) {
           const target = text.slice(close + 2, end).trim().split(/\s+/)[0] ?? "";
           const href = safeHref(target);
-          const label = text.slice(i + 1, close);
+          // A picture (`![alt](…)`) shows as its link: the viewer opens it.
+          if (buffer.endsWith("!")) buffer = buffer.slice(0, -1);
+          const label = text.slice(i + 1, close) || (target.split(/[?#]/)[0] ?? "").split("/").pop() || target;
           flush();
           if (href) out.push({ t: "link", href, c: parseInline(label) });
+          else if (looksLikePath(target)) out.push({ t: "file", path: target, c: parseInline(label) });
           else out.push(...parseInline(label));
           i = end + 1;
           continue;
@@ -372,7 +380,8 @@ function inlineNodes(items: Inline[], parent: Node): void {
       case "code": {
         const el = document.createElement("code");
         el.textContent = item.v;
-        parent.appendChild(el);
+        // A path to a picture, video or PDF opens in the viewer.
+        parent.appendChild(looksLikePath(item.v) && viewKindOf(item.v) ? viewLink({ viewPath: item.v }, el) : el);
         break;
       }
       case "strong":
@@ -388,12 +397,37 @@ function inlineNodes(items: Inline[], parent: Node): void {
         el.href = item.href;
         el.target = "_blank";
         el.rel = "noopener noreferrer nofollow";
+        // A picture, video or PDF on the web opens in the viewer.
+        if (/^https?:/i.test(item.href) && viewKindOf(item.href)) {
+          el.dataset.viewUrl = item.href;
+          el.classList.add("ai-view-link");
+        }
         inlineNodes(item.c, el);
         parent.appendChild(el);
         break;
       }
+      case "file": {
+        const label = document.createElement("span");
+        inlineNodes(item.c, label);
+        parent.appendChild(viewKindOf(item.path) ? viewLink({ viewPath: item.path }, label) : label);
+        break;
+      }
     }
   }
+}
+
+/** A link the chat opens in the viewer beside it (`data-view-path`/`-url`). */
+function viewLink(data: { viewPath?: string; viewUrl?: string }, ...children: Node[]): HTMLAnchorElement {
+  const el = document.createElement("a");
+  el.href = "#";
+  el.className = "ai-view-link";
+  if (data.viewPath) {
+    el.dataset.viewPath = data.viewPath;
+    el.title = `Open ${data.viewPath}`;
+  }
+  if (data.viewUrl) el.dataset.viewUrl = data.viewUrl;
+  el.append(...children);
+  return el;
 }
 
 function inlineInto(el: HTMLElement, text: string): HTMLElement {

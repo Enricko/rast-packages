@@ -18,6 +18,15 @@ to people is also in `ui/whats-new.ts`, shown once per version.
   had written is taken back before the next one. `POST
   /api/ai/conversations/{id}/retry`; the waiting reply's message carries
   `retry`.
+- **A viewer beside the chat.** Pictures, videos and PDFs named in a chat
+  open in a panel on the right, in the artifact panel's place, with
+  Download, Open in a new tab, Show in File Station and Close: links in an
+  answer, paths in the person's files (`/shared/team/q3.pdf`), a finished
+  `read_file`/`write_file` call (**View**), and pictures and PDFs sent in
+  the chat. Files open with the person's own access; web addresses go
+  through `GET /api/ai/view` (public addresses, media types, ranges,
+  512 MB). The agent is told to write paths so they open there. PDFs sent in
+  the chat open inline (sandboxed).
 
 ### Fixed
 

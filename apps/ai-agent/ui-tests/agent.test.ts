@@ -4,6 +4,7 @@ import test from "node:test";
 import { agentHues } from "../src/apps/agent/marks";
 import { parseInline, parseMarkdown, safeHref } from "../src/apps/agent/markdown";
 import { compareVersions, whatsNewSince, WHATS_NEW } from "../src/apps/agent/whats-new";
+import { folderOf, looksLikePath, viewKindOf, viewOfChatFile, viewOfPath, viewOfUrl } from "../src/apps/agent/view";
 import {
   accountState,
   countedBars,
@@ -475,4 +476,55 @@ test("a reply waiting to try again counts down in whole seconds", () => {
   assert.equal(retryLabel(retry, 29_001), "Retrying 1/10 in 30s");
   assert.equal(retryLabel({ attempt: 7, of: 10 }, 400), "Retrying 7/10 in 1s");
   assert.equal(retryLabel(retry, -250), "Retrying 1/10 in 0s");
+});
+
+test("the viewer opens pictures, videos and PDFs by their names", () => {
+  assert.equal(viewKindOf("/home/report.PDF"), "pdf");
+  assert.equal(viewKindOf("https://a.io/x/cat.jpeg?size=2#top"), "image");
+  assert.equal(viewKindOf("clip.webm"), "video");
+  assert.equal(viewKindOf("notes.txt"), null);
+  assert.equal(viewKindOf("/home/.png"), null);
+  assert.equal(viewKindOf("https://a.io/download?file=a.png"), null);
+  assert.equal(viewKindOf("https://a.io/"), null);
+});
+
+test("links open through the server, files with the person's own access", () => {
+  const web = viewOfUrl("https://example.com/media/My%20Chart.png");
+  assert.equal(web?.kind, "image");
+  assert.equal(web?.title, "My Chart.png");
+  assert.equal(web?.src, "/api/ai/view?url=https%3A%2F%2Fexample.com%2Fmedia%2FMy%2520Chart.png");
+  assert.equal(web?.external, "https://example.com/media/My%20Chart.png");
+  assert.equal(viewOfUrl("javascript:alert(1)//x.png"), null);
+  assert.equal(viewOfUrl("https://example.com/page.html"), null);
+
+  const pdf = viewOfPath("/shared/team/Q3 report.pdf");
+  assert.equal(pdf?.src, "/api/files/preview?path=%2Fshared%2Fteam%2FQ3%20report.pdf");
+  assert.equal(pdf?.download, "/api/files/download?path=%2Fshared%2Fteam%2FQ3%20report.pdf");
+  assert.equal(pdf?.path, "/shared/team/Q3 report.pdf");
+  const video = viewOfPath("/videos/demo.mp4");
+  assert.equal(video?.src, "/api/files/download?path=%2Fvideos%2Fdemo.mp4", "a video plays from its download");
+  assert.equal(viewOfPath("//evil.example/x.png"), null);
+  assert.equal(viewOfPath("/api/files/preview?path=x.png"), null);
+  assert.equal(viewOfPath("relative/x.png"), null);
+  assert.equal(looksLikePath("/home/pic.png"), true);
+  assert.equal(looksLikePath("/home/dir/"), false);
+  assert.equal(folderOf("/shared/team/Q3 report.pdf"), "/shared/team");
+  assert.equal(folderOf("/pic.png"), "/");
+
+  assert.equal(viewOfChatFile({ id: "f1", name: "scan.pdf", kind: "pdf" })?.src, "/api/ai/files/f1");
+  assert.equal(viewOfChatFile({ id: "f2", name: "notes.txt", kind: "text" }), null);
+});
+
+test("pictures and file links in answers become links the viewer opens", () => {
+  assert.deepEqual(parseInline("![chart](https://a.io/c.png)"), [
+    { t: "link", href: "https://a.io/c.png", c: [{ t: "text", v: "chart" }] },
+  ]);
+  assert.deepEqual(parseInline("see ![](https://a.io/c.png)"), [
+    { t: "text", v: "see " },
+    { t: "link", href: "https://a.io/c.png", c: [{ t: "text", v: "c.png" }] },
+  ]);
+  assert.deepEqual(parseInline("[the report](/shared/q3.pdf)"), [
+    { t: "file", path: "/shared/q3.pdf", c: [{ t: "text", v: "the report" }] },
+  ]);
+  assert.deepEqual(parseInline("Wow! [x](javascript:alert(1))"), [{ t: "text", v: "Wow! " }, { t: "text", v: "x" }]);
 });

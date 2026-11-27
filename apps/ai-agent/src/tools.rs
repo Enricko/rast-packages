@@ -1029,6 +1029,30 @@ fn public_agent(timeout: Duration) -> ureq::Agent {
     )
 }
 
+/// [`public_agent`] for the viewer's media ([`crate::view`]): no limit on
+/// the whole answer (a video streams for as long as it plays), but on
+/// connecting, on the site's answer and on the body.
+pub(crate) fn public_media_agent() -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_connect(Some(crate::view::CONNECT_TIMEOUT))
+        .timeout_recv_response(Some(crate::view::ANSWER_TIMEOUT))
+        .timeout_recv_body(Some(crate::view::BODY_TIMEOUT))
+        .user_agent(format!(
+            "Mozilla/5.0 (compatible; RAST/{} AI Agent)",
+            crate::VERSION
+        ))
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .http_status_as_error(false)
+        .proxy(None)
+        .build();
+    ureq::Agent::with_parts(
+        config,
+        ureq::unversioned::transport::DefaultConnector::default(),
+        PublicOnly::default(),
+    )
+}
+
 fn encode(value: &str) -> String {
     percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
@@ -1293,7 +1317,7 @@ pub fn is_public(ip: IpAddr) -> bool {
     }
 }
 
-fn check_public(url: &WebUrl) -> Result<(), String> {
+pub(crate) fn check_public(url: &WebUrl) -> Result<(), String> {
     let addresses: Vec<IpAddr> = (url.host.as_str(), url.port)
         .to_socket_addrs()
         .map_err(|e| format!("cannot find {}: {e}", url.host))?

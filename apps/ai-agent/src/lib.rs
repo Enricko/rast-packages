@@ -42,6 +42,7 @@ pub mod provider;
 pub mod run;
 pub mod signin;
 pub mod tools;
+pub mod view;
 
 use std::collections::HashMap;
 
@@ -1975,7 +1976,9 @@ pub fn system_prompt(
         if tools.has(tools::LIST_FILES) {
             prompt.push_str(
                 "\n\nTheir RAST files: '/' is their home folder; shared folders they can open are under \
-                 '/shared/<name>'.",
+                 '/shared/<name>'. When you mention one of their files, write its path (`/reports/q3.pdf`) \
+                 or link it ([the Q3 report](/reports/q3.pdf)): pictures, videos and PDFs then open \
+                 beside the chat.",
             );
         }
         match (tools.shell, &tools.home_on_disk) {

@@ -3016,6 +3016,87 @@ async fn ai_replies_try_again_after_passing_failures() {
     assert_eq!(requests, 11, "the first request and 10 tries again");
 }
 
+/// The viewer beside the chat: media on the web comes through the server
+/// from public places only; a PDF sent in the chat opens inline, sandboxed.
+#[tokio::test]
+async fn ai_viewer_opens_media_from_public_places_and_chat_pdfs_inline() {
+    let server = TestServer::start().await;
+    server
+        .create_user("admin", ADMIN_PASSWORD, Role::Admin)
+        .await;
+    server.create_user("alice", USER_PASSWORD, Role::User).await;
+    let admin = server.login("admin", ADMIN_PASSWORD).await;
+    let alice = server.login("alice", USER_PASSWORD).await;
+    let alice_id = server.user_id("alice").await;
+    install_ai_agent_app(&server, &admin, Some(alice_id)).await;
+
+    let (status, _, _) = server
+        .request(
+            "GET",
+            "/api/ai/view?url=https%3A%2F%2Fexample.com%2Fa.png",
+            None,
+            HeaderMap::new(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = server
+        .request("GET", "/api/ai/view", None, alice.headers())
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    for (url, says) in [
+        ("http://127.0.0.1:9/a.png", "private network"),
+        ("http://localhost/a.pdf", "private network"),
+        ("http://10.1.2.3/clip.mp4", "private network"),
+        ("ftp://example.com/a.png", ""),
+    ] {
+        let path = format!(
+            "/api/ai/view?url={}",
+            url.replace(':', "%3A").replace('/', "%2F")
+        );
+        let (status, _, body) = server.request("GET", &path, None, alice.headers()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{url}: {body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains(says),
+            "{url}: {body}"
+        );
+    }
+
+    let (status, body) = server
+        .request_raw(
+            "POST",
+            "/api/ai/files?name=scan.pdf",
+            b"%PDF-1.7\nx".to_vec(),
+            "application/pdf",
+            alice.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let file: Value = serde_json::from_slice(&body).unwrap();
+    let (status, headers, _) = server
+        .request(
+            "GET",
+            &format!("/api/ai/files/{}", file["id"].as_str().unwrap()),
+            None,
+            alice.headers(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let header = |name: header::HeaderName| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    };
+    assert_eq!(header(header::CONTENT_TYPE), "application/pdf");
+    assert!(header(header::CONTENT_DISPOSITION).starts_with("inline;"));
+    assert!(header(header::CONTENT_SECURITY_POLICY).contains("sandbox"));
+    assert_eq!(header(header::X_CONTENT_TYPE_OPTIONS), "nosniff");
+}
+
 async fn install_ai_agent_app(server: &TestServer, admin: &Session, user_id: Option<i64>) {
     if let Some(user_id) = user_id {
         let (status, _, body) = server

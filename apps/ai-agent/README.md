@@ -2,8 +2,8 @@
 
 RAST's agent harness as an App Center app package (`ai-agent`, app id
 `agent`): chat with the models an administrator connects, with tools, files,
-a web browser, artifacts, plan sign-ins with several accounts per provider and
-a quota tracker. RAST installs it from App Center, runs its server program
+a web browser, artifacts, a viewer for the pictures, videos and PDFs a chat
+names, plan sign-ins with several accounts per provider and a quota tracker. RAST installs it from App Center, runs its server program
 next to itself and opens its window with its window SDK, so AI Agent updates
 without a RAST release.
 
