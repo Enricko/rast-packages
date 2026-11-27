@@ -408,6 +408,43 @@
           "status": "stable"
         }
       ]
+    },
+    "ai-agent": {
+      "name": "AI Agent",
+      "description": "RAST's AI Agent app: chat with AI agents on the models an administrator connects, with tools, files, a web browser and artifacts. Built and attested by RAST's ai-agent workflow; updates here without a RAST update.",
+      "homepage": "https://github.com/Enricko/rast",
+      "license": "MIT",
+      "keepPatches": 2,
+      "githubAttestations": true,
+      "minRastVersion": "0.9.17",
+      "app": {
+        "id": "agent",
+        "window": {
+          "entry": "ui/app.js",
+          "styles": [
+            "ui/app.css"
+          ],
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1080,
+            "h": 720
+          }
+        },
+        "server": {
+          "executable": "bin/rast-ai-agent",
+          "hostApi": 1,
+          "apiPrefix": "/api/ai",
+          "eventPrefix": "ai."
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "AI Agent",
+          "status": "stable"
+        }
+      ]
     }
   }
 }
