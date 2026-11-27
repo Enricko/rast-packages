@@ -274,6 +274,9 @@ pub struct ChatError {
     pub tools_refused: bool,
     /// The account reached a limit (another account may answer).
     pub limit: Option<limits::Limit>,
+    /// A passing failure (a timeout, the network, the provider's servers
+    /// busy or failing): the same request may well work in a while.
+    pub transient: bool,
 }
 
 impl From<String> for ChatError {
@@ -282,8 +285,39 @@ impl From<String> for ChatError {
             message,
             tools_refused: false,
             limit: None,
+            transient: false,
         }
     }
+}
+
+impl ChatError {
+    /// A passing failure (see [`ChatError::transient`]).
+    pub fn transient(message: String) -> Self {
+        Self {
+            transient: true,
+            ..message.into()
+        }
+    }
+}
+
+/// Whether a request that could not be sent or answered may work later:
+/// timeouts, refused or dropped connections, a name that did not resolve.
+pub fn transient_network(error: &ureq::Error) -> bool {
+    matches!(
+        error,
+        ureq::Error::Timeout(_)
+            | ureq::Error::Io(_)
+            | ureq::Error::HostNotFound
+            | ureq::Error::ConnectionFailed
+            | ureq::Error::Protocol(_)
+            | ureq::Error::BodyStalled
+    )
+}
+
+/// HTTP statuses of a provider whose servers are busy or failing for now
+/// (a 429 is a limit, see [`limits::limit`]).
+pub fn transient_status(status: u16) -> bool {
+    matches!(status, 408 | 500 | 502 | 503 | 504 | 520..=524 | 529)
 }
 
 impl From<&str> for ChatError {
@@ -425,7 +459,7 @@ pub(crate) fn agent(timeout: Duration) -> ureq::Agent {
         .timeout_global(Some(timeout))
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_recv_response(Some(RESPONSE_TIMEOUT))
-        .user_agent(concat!("RAST/", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("RAST/{}", crate::VERSION))
         .max_redirects(0)
         .max_redirects_will_error(false)
         .http_status_as_error(false)
@@ -599,9 +633,10 @@ pub fn stream_chat(
             request = request.header(name, value);
         }
         request = request.header("Accept", "text/event-stream");
-        let response = request
-            .send(body.as_bytes())
-            .map_err(|e| format!("cannot reach the provider at {}: {e}", req.base_url))?;
+        let response = request.send(body.as_bytes()).map_err(|e| ChatError {
+            transient: transient_network(&e),
+            ..format!("cannot reach the provider at {}: {e}", req.base_url).into()
+        })?;
         let status = response.status().as_u16();
         let headers = limits::headers_of(response.headers());
         if (200..300).contains(&status) {
@@ -618,9 +653,11 @@ pub fn stream_chat(
             wire.effort = effort.fallback();
             continue;
         }
+        let limit = limits::limit(status, &headers, &body, now_ms());
         return Err(ChatError {
             tools_refused: !req.tools.is_empty() && refuses_tools(status, &body),
-            limit: limits::limit(status, &headers, &body, now_ms()),
+            transient: limit.is_none() && transient_status(status),
+            limit,
             message: plans::refusal(req.kind, status, &body)
                 .unwrap_or_else(|| refusal(status, &body)),
         });
@@ -640,8 +677,13 @@ pub fn stream_chat(
                 quota,
             });
         }
-        let line = line.map_err(|e| format!("the provider's answer broke off: {e}"))?;
-        for delta in parser.line(&line)? {
+        let line = line
+            .map_err(|e| ChatError::transient(format!("the provider's answer broke off: {e}")))?;
+        let deltas = parser.line(&line).map_err(|message| ChatError {
+            transient: parser.failed_transiently,
+            ..message.into()
+        })?;
+        for delta in deltas {
             on_delta(delta);
         }
         if parser.done && wire.protocol != Protocol::Chat {

@@ -34,16 +34,21 @@ struct TestServer {
 
 impl TestServer {
     async fn start() -> Self {
-        Self::start_with(false).await
+        Self::start_with(false, None).await
     }
 
     /// AI Agent on RAST's own database, as RAST ran it when it was built in
     /// (the package then takes its data over).
     async fn start_old_built_in() -> Self {
-        Self::start_with(true).await
+        Self::start_with(true, None).await
     }
 
-    async fn start_with(on_rast_db: bool) -> Self {
+    /// Replies wait `wait` before trying a failed step again.
+    async fn start_retrying_after(wait: std::time::Duration) -> Self {
+        Self::start_with(false, Some(wait)).await
+    }
+
+    async fn start_with(on_rast_db: bool, retry_wait: Option<std::time::Duration>) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let cfg = Config::from_parts(
             None,
@@ -72,7 +77,10 @@ impl TestServer {
             .await
             .expect("agent database")
         };
-        let agent = Agent::built_in(&state, agent_db);
+        let mut agent = Agent::built_in(&state, agent_db);
+        if let Some(wait) = retry_wait {
+            agent.retry_wait = wait;
+        }
         // As RAST mounted it when AI Agent was built in: its package, once
         // installed, takes /api/ai/* over (`hand_to_app`).
         let app = api::router_with(
@@ -237,7 +245,9 @@ type FakeLog = std::sync::Arc<std::sync::Mutex<Vec<(String, String, Value)>>>;
 /// "Ahoy there!" (with reasoning, usage and its request limits) or, for the
 /// model `slow`, four words 700 ms apart. Chat requests need the key
 /// `sk-test-secret-1234`; the key `sk-limited-0000` has used up its plan
-/// (429, back in an hour).
+/// (429, back in an hour). The model `down` is always busy (503); `flaky`
+/// is busy at its first request, breaks off with "overloaded" after "Half "
+/// at its second, and answers from its third.
 fn fake_provider() -> (SocketAddr, FakeLog) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake provider");
     let addr = listener.local_addr().expect("address");
@@ -312,6 +322,43 @@ fn serve_fake(mut stream: std::net::TcpStream, log: &FakeLog) {
             json.len()
         );
         return;
+    }
+    let busy = |stream: &mut std::net::TcpStream| {
+        let json = r#"{"error":{"message":"The server is busy","type":"server_error"}}"#;
+        let _ = write!(
+            stream,
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",
+            json.len()
+        );
+    };
+    if body["model"] == "down" {
+        busy(&mut stream);
+        return;
+    }
+    if body["model"] == "flaky" {
+        let tries = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(line, _, body)| line.starts_with("POST") && body["model"] == "flaky")
+            .count();
+        if tries == 1 {
+            busy(&mut stream);
+            return;
+        }
+        if tries == 2 {
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            );
+            let half = json!({"choices": [{"delta": {"content": "Half "}}]});
+            let _ = write!(stream, "data: {half}\n\n");
+            let _ = stream.flush();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let _ = stream.write_all(
+                b"data: {\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+            );
+            return;
+        }
     }
     let _ = stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nx-ratelimit-limit-requests: 100\r\nx-ratelimit-remaining-requests: 97\r\nx-ratelimit-reset-requests: 6m0s\r\nConnection: close\r\n\r\n",
@@ -2735,6 +2782,240 @@ fn assert_loopback_redirect(redirect: &str) {
 
 /// Install the AI Agent app (it ships with RAST but starts uninstalled, and
 /// every `/api/ai/*` call needs it) and optionally grant an account access.
+/// The last message of the conversation once `ready` says yes.
+async fn ai_until(
+    server: &TestServer,
+    session: &Session,
+    id: &str,
+    what: &str,
+    ready: impl Fn(&Value) -> bool,
+) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..300 {
+        let (status, _, body) = server
+            .request(
+                "GET",
+                &format!("/api/ai/conversations/{id}"),
+                None,
+                session.headers(),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        last = body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .cloned()
+            .unwrap_or_default();
+        if ready(&last) {
+            return last;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the reply never got to: {what}; it is {last}");
+}
+
+/// A reply whose provider fails in passing (busy, broken off) waits and
+/// tries again, up to 10 times, showing the countdown; Retry now cuts the
+/// wait short, Stop ends it, and what a failed try wrote is taken back.
+#[tokio::test]
+async fn ai_replies_try_again_after_passing_failures() {
+    let server = TestServer::start_retrying_after(std::time::Duration::from_secs(60)).await;
+    server
+        .create_user("admin", ADMIN_PASSWORD, Role::Admin)
+        .await;
+    server.create_user("alice", USER_PASSWORD, Role::User).await;
+    let admin = server.login("admin", ADMIN_PASSWORD).await;
+    let alice = server.login("alice", USER_PASSWORD).await;
+    let alice_id = server.user_id("alice").await;
+    install_ai_agent_app(&server, &admin, Some(alice_id)).await;
+    let (addr, log) = fake_provider();
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/ai/providers",
+            Some(
+                json!({"kind": "custom", "name": "Local", "baseUrl": format!("http://{addr}/v1"),
+                        "apiKey": "sk-test-secret-1234", "models": ["flaky", "down"]}),
+            ),
+            admin.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let provider_id = body["provider"]["id"].as_str().unwrap().to_string();
+    let chat = |model: &'static str| {
+        let (server, alice, provider_id) = (&server, &alice, provider_id.clone());
+        async move {
+            let (status, _, body) = server
+                .request(
+                    "POST",
+                    "/api/ai/conversations",
+                    Some(json!({"providerId": provider_id, "model": model})),
+                    alice.headers_with_csrf(),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let id = body["conversation"]["id"].as_str().unwrap().to_string();
+            let (status, _, body) = server
+                .request(
+                    "POST",
+                    &format!("/api/ai/conversations/{id}/messages"),
+                    Some(json!({"text": "hello"})),
+                    alice.headers_with_csrf(),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            id
+        }
+    };
+    let retry = |id: String| {
+        let (server, alice) = (&server, &alice);
+        async move {
+            let (status, _, body) = server
+                .request(
+                    "POST",
+                    &format!("/api/ai/conversations/{id}/retry"),
+                    None,
+                    alice.headers_with_csrf(),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body["retrying"].as_bool().unwrap()
+        }
+    };
+
+    // Busy: the reply waits for try 1 of 10, with the time left.
+    let flaky = chat("flaky").await;
+    let waiting = ai_until(&server, &alice, &flaky, "try 1", |m| {
+        m["retry"]["attempt"] == 1
+    })
+    .await;
+    assert_eq!(waiting["status"], "streaming", "{waiting}");
+    assert_eq!(waiting["retry"]["of"], 10, "{waiting}");
+    let left = waiting["retry"]["inMs"].as_i64().unwrap();
+    assert!(left > 50_000 && left <= 60_000, "{waiting}");
+    assert!(
+        waiting["retry"]["error"].as_str().unwrap().contains("503"),
+        "{waiting}"
+    );
+    // Retry now: the second request writes "Half " and breaks off.
+    assert!(retry(flaky.clone()).await);
+    let again = ai_until(&server, &alice, &flaky, "try 2", |m| {
+        m["retry"]["attempt"] == 2
+    })
+    .await;
+    assert!(
+        again["retry"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("Overloaded"),
+        "{again}"
+    );
+    assert!(
+        !again["content"].to_string().contains("Half"),
+        "what the broken try wrote is taken back: {again}"
+    );
+    assert!(retry(flaky.clone()).await);
+    let done = ai_finished(&server, &alice, &flaky).await;
+    let reply = done["messages"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(reply["status"], "done", "{reply}");
+    assert!(reply.get("retry").is_none(), "{reply}");
+    let text = reply["content"].to_string();
+    assert!(
+        text.contains("Ahoy there!") && !text.contains("Half"),
+        "{reply}"
+    );
+    assert!(!retry(flaky.clone()).await, "nothing waits any more");
+    let tries = |model: &str| {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|(line, _, body)| line.starts_with("POST") && body["model"] == model)
+            .count()
+    };
+    assert_eq!(tries("flaky"), 3);
+
+    // Stop ends the wait.
+    let down = chat("down").await;
+    ai_until(&server, &alice, &down, "try 1", |m| {
+        m["retry"]["attempt"] == 1
+    })
+    .await;
+    let (status, _, body) = server
+        .request(
+            "POST",
+            &format!("/api/ai/conversations/{down}/stop"),
+            None,
+            alice.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stopped = ai_until(&server, &alice, &down, "stopped", |m| {
+        m["status"] != "streaming"
+    })
+    .await;
+    assert_eq!(stopped["status"], "stopped", "{stopped}");
+    assert_eq!(tries("down"), 1);
+
+    // Busy every time: 10 tries again, then the reply says so.
+    let quick = TestServer::start_retrying_after(std::time::Duration::from_millis(20)).await;
+    quick
+        .create_user("admin", ADMIN_PASSWORD, Role::Admin)
+        .await;
+    let admin = quick.login("admin", ADMIN_PASSWORD).await;
+    install_ai_agent_app(&quick, &admin, None).await;
+    let (addr, log) = fake_provider();
+    let (status, _, body) = quick
+        .request(
+            "POST",
+            "/api/ai/providers",
+            Some(
+                json!({"kind": "custom", "name": "Local", "baseUrl": format!("http://{addr}/v1"),
+                        "apiKey": "sk-test-secret-1234", "models": ["down"]}),
+            ),
+            admin.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let provider_id = body["provider"]["id"].as_str().unwrap().to_string();
+    let (status, _, body) = quick
+        .request(
+            "POST",
+            "/api/ai/conversations",
+            Some(json!({"providerId": provider_id, "model": "down"})),
+            admin.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["conversation"]["id"].as_str().unwrap().to_string();
+    let (status, _, body) = quick
+        .request(
+            "POST",
+            &format!("/api/ai/conversations/{id}/messages"),
+            Some(json!({"text": "hello"})),
+            admin.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let ended = ai_finished(&quick, &admin, &id).await;
+    let reply = ended["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(reply["status"], "error", "{reply}");
+    let error = reply["error"].as_str().unwrap();
+    assert!(error.contains("tried again 10 times"), "{error}");
+    let requests = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(line, _, _)| line.starts_with("POST"))
+        .count();
+    assert_eq!(requests, 11, "the first request and 10 tries again");
+}
+
 async fn install_ai_agent_app(server: &TestServer, admin: &Session, user_id: Option<i64>) {
     if let Some(user_id) = user_id {
         let (status, _, body) = server

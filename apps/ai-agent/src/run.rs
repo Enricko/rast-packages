@@ -15,6 +15,14 @@
 //! meanwhile (`seq` tells which deltas they still need) and stores them at
 //! every tool change and when it ends. Stopping marks the reply stopped at
 //! once; the provider's thread ends at its next line.
+//!
+//! A step that fails in passing (a timeout, the network, the provider busy:
+//! [`provider::ChatError::transient`]) is tried again after
+//! [`Agent::retry_wait`], up to [`RETRY_TRIES`] times in a row; what it had
+//! written is taken back first. While it waits the reply's message carries
+//! `retry: {attempt, of, inMs, error}` (in `ai.message` and in the
+//! conversation); Stop ends the wait, Retry now (`POST …/retry`) cuts it
+//! short.
 
 use std::{
     collections::HashMap,
@@ -42,6 +50,34 @@ const PUBLISH_EVERY: Duration = Duration::from_millis(120);
 pub const MAX_STEPS: usize = 25;
 /// Tool calls in one reply.
 pub const MAX_TOOL_CALLS: usize = 200;
+/// Tries again after a passing failure, in a row (a step that works starts
+/// the count again).
+pub const RETRY_TRIES: u32 = 10;
+/// The wait before each try again.
+pub const RETRY_WAIT: Duration = Duration::from_secs(30);
+
+/// A reply waiting to try its step again.
+#[derive(Debug, Clone)]
+pub struct Retry {
+    /// This try again, from 1 to [`RETRY_TRIES`].
+    pub attempt: u32,
+    /// When it starts (ms).
+    pub at: i64,
+    /// What failed.
+    pub error: String,
+}
+
+impl Retry {
+    /// As pages get it: the time left rather than a time on the server's clock.
+    pub fn json(&self, now: i64) -> Value {
+        json!({
+            "attempt": self.attempt,
+            "of": RETRY_TRIES,
+            "inMs": (self.at - now).max(0),
+            "error": self.error,
+        })
+    }
+}
 
 /// What a running reply has so far.
 #[derive(Debug, Clone, Default)]
@@ -49,6 +85,8 @@ pub struct Snapshot {
     pub blocks: Vec<Value>,
     /// Deltas published so far in this run.
     pub seq: u64,
+    /// Waiting to try the step again.
+    pub retry: Option<Retry>,
 }
 
 #[derive(Debug, Default)]
@@ -56,6 +94,8 @@ pub struct Active {
     message_id: AtomicI64,
     cancel: Arc<AtomicBool>,
     stopped: Notify,
+    /// Retry now: ends the wait before a try again.
+    retry_now: Notify,
     snapshot: Mutex<Snapshot>,
 }
 
@@ -127,6 +167,17 @@ impl Runs {
                 true
             }
             None => false,
+        }
+    }
+
+    /// Try the waiting step again now. Returns whether one was waiting.
+    pub fn retry_now(&self, conversation_id: &str) -> bool {
+        match self.get(conversation_id) {
+            Some(run) if run.snapshot().retry.is_some() => {
+                run.retry_now.notify_one();
+                true
+            }
+            _ => false,
         }
     }
 
@@ -223,6 +274,8 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
     let mut tokens = job.tokens;
     let mut tools_on = !job.request.tools.is_empty();
     let mut steps = 0usize;
+    // Tries again since the last step that worked.
+    let mut retries = 0u32;
     let end = loop {
         if !run_allowed_tools(state, run, &job, tokens).await || run.cancelled() {
             break End::Stopped;
@@ -243,9 +296,10 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
             request.tools.clear();
         }
         request.messages = history.clone();
+        let before = run.snapshot().blocks;
         request
             .messages
-            .extend(super::turns_of(&Value::Array(run.snapshot().blocks)));
+            .extend(super::turns_of(&Value::Array(before.clone())));
         match stream_step(state, run, &job, request).await {
             Step::Stopped(usage) => {
                 count(state, &job, &mut tokens, usage).await;
@@ -267,12 +321,32 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
                 tools_on = false;
                 steps -= 1;
             }
+            Step::Failed { error, wrote } if error.transient && retries < RETRY_TRIES => {
+                retries += 1;
+                tracing::info!(provider = %job.provider_id, attempt = retries, error = %error.message, "AI reply failed in passing; trying again");
+                if wrote {
+                    // What the failed step wrote goes; the try writes it anew.
+                    run.with(|s| s.blocks = before);
+                }
+                if !wait_to_retry(state, run, &job, tokens, retries, &error.message).await {
+                    break End::Stopped;
+                }
+                steps -= 1;
+            }
+            Step::Failed { error, .. } if error.transient => {
+                break End::Failed(format!(
+                    "{} (tried again {RETRY_TRIES} times, {} seconds apart)",
+                    error.message.trim_end_matches('.'),
+                    state.retry_wait.as_secs()
+                ))
+            }
             Step::Failed { error, .. } => break End::Failed(error.message),
             Step::Answered {
                 calls,
                 usage,
                 quota,
             } => {
+                retries = 0;
                 super::accounts::store_quota(&state.db, &job.account_id, &quota).await;
                 count(state, &job, &mut tokens, usage).await;
                 if calls.is_empty() {
@@ -344,7 +418,7 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
     // Stored and counted: the conversation takes the next message now
     // (before pages hear the reply ended and send one).
     runs.finish(&job.conversation_id, run);
-    publish_message(state, &job, false, 0).await;
+    publish_message(state, &job, false, 0, None).await;
     if let Ok(Some(conversation)) = super::conversation(&state.db, &job.conversation_id).await {
         state.host.publish_user_and_admin(
             "ai.conversation",
@@ -601,21 +675,67 @@ async fn limited(state: &Agent, job: &ReplyJob, message: String, until: i64) -> 
     )
 }
 
+/// Wait [`Agent::retry_wait`] before try again number `attempt`, showing it.
+/// False when the reply was stopped meanwhile.
+async fn wait_to_retry(
+    state: &Agent,
+    run: &Arc<Active>,
+    job: &ReplyJob,
+    tokens: (i64, i64),
+    attempt: u32,
+    error: &str,
+) -> bool {
+    let wait = state.retry_wait;
+    run.with(|s| {
+        s.retry = Some(Retry {
+            attempt,
+            at: now_ms() + wait.as_millis() as i64,
+            error: error.to_string(),
+        })
+    });
+    progress(state, run, job, tokens).await;
+    let go_on = tokio::select! {
+        biased;
+        _ = run.stopped.notified() => false,
+        _ = run.retry_now.notified() => true,
+        _ = tokio::time::sleep(wait) => true,
+    } && !run.cancelled();
+    let seq = run.with(|s| {
+        s.retry = None;
+        s.seq
+    });
+    if go_on {
+        publish_message(state, job, true, seq, None).await;
+    }
+    go_on
+}
+
 /// Store the reply as it is (still being written) and show it.
 async fn progress(state: &Agent, run: &Arc<Active>, job: &ReplyJob, tokens: (i64, i64)) {
-    let (content, seq) = run.with(|s| (Value::Array(s.blocks.clone()), s.seq));
+    let (content, seq, retry) =
+        run.with(|s| (Value::Array(s.blocks.clone()), s.seq, s.retry.clone()));
     if let Err(e) = store(&state.db, job, &content, "streaming", "", tokens, None).await {
         tracing::warn!(error = %e, "could not store an AI reply");
     }
-    publish_message(state, job, true, seq).await;
+    publish_message(state, job, true, seq, retry.as_ref()).await;
 }
 
-async fn publish_message(state: &Agent, job: &ReplyJob, running: bool, seq: u64) {
+async fn publish_message(
+    state: &Agent,
+    job: &ReplyJob,
+    running: bool,
+    seq: u64,
+    retry: Option<&Retry>,
+) {
     if let Ok(Some(message)) = super::message(&state.db, job.message_id).await {
+        let mut message = message.json();
+        if let Some(retry) = retry {
+            message["retry"] = retry.json(now_ms());
+        }
         state.host.publish_user_and_admin(
             "ai.message",
             job.owner.id,
-            json!({"conversationId": job.conversation_id, "message": message.json(), "running": running, "seq": seq}),
+            json!({"conversationId": job.conversation_id, "message": message, "running": running, "seq": seq}),
         );
     }
 }

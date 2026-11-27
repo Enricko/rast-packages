@@ -980,10 +980,9 @@ fn http_config(timeout: Duration, redirects: u32) -> ureq::config::Config {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
         .timeout_connect(Some(Duration::from_secs(10)))
-        .user_agent(concat!(
-            "Mozilla/5.0 (compatible; RAST/",
-            env!("CARGO_PKG_VERSION"),
-            " AI Agent)"
+        .user_agent(format!(
+            "Mozilla/5.0 (compatible; RAST/{} AI Agent)",
+            crate::VERSION
         ))
         .max_redirects(redirects)
         .max_redirects_will_error(false)

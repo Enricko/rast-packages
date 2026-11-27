@@ -7,6 +7,23 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+### Added
+
+- **Replies try again after a passing failure.** When the provider times
+  out, cannot be reached, breaks off, or answers that it is busy or failing
+  (HTTP 408/500/502/503/504/52x/529, `overloaded_error`, `server_error`,
+  `UNAVAILABLE`), the reply waits 30 seconds and tries again, up to 10 times
+  in a row (5 minutes). The chat shows "Retrying 1/10 in 30s" counting down,
+  with what failed and **Retry now**; Stop ends the wait. What a failed try
+  had written is taken back before the next one. `POST
+  /api/ai/conversations/{id}/retry`; the waiting reply's message carries
+  `retry`.
+
+### Fixed
+
+- Requests to providers and sign-in pages say RAST's version again
+  (`RAST/0.9.17`), not AI Agent's, as before the move.
+
 ### Changed
 
 - The source moved from RAST's repository to this one (`apps/ai-agent`):

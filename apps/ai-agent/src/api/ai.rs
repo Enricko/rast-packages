@@ -47,6 +47,7 @@ pub fn routes() -> Router<Agent> {
         .route("/api/ai/files", post(upload_file))
         .route("/api/ai/files/{id}", get(get_file).delete(delete_file))
         .route("/api/ai/conversations/{id}/stop", post(stop_reply))
+        .route("/api/ai/conversations/{id}/retry", post(retry_now))
         .route(
             "/api/ai/conversations/{id}/artifacts/{call_id}",
             get(get_artifact),
@@ -532,6 +533,9 @@ async fn get_conversation(
         for message in &mut messages {
             if message["id"] == message_id && message["status"] == "streaming" {
                 message["content"] = Value::Array(snapshot.blocks.clone());
+                if let Some(retry) = &snapshot.retry {
+                    message["retry"] = retry.json(crate::db::now_ms());
+                }
             }
         }
     }
@@ -1228,6 +1232,19 @@ async fn stop_reply(
         );
     }
     Ok(Json(json!({ "stopped": ended })))
+}
+
+/// POST /api/ai/conversations/{id}/retry — a reply waiting to try a step
+/// again (after a timeout or a busy provider) tries it now.
+async fn retry_now(
+    State(state): State<Agent>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> AppResult<Json<Value>> {
+    let conversation = owned(&state, &user, &id, true).await?;
+    Ok(Json(
+        json!({ "retrying": state.ai.retry_now(&conversation.id) }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

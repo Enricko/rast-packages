@@ -39,6 +39,9 @@ pub struct Agent {
     pub secrets: Arc<Secrets>,
     pub ai: Arc<Runs>,
     pub host: Host,
+    /// The wait before a reply tries a step again ([`crate::run::RETRY_WAIT`];
+    /// shorter in tests).
+    pub retry_wait: std::time::Duration,
     data_dir: PathBuf,
 }
 
@@ -53,6 +56,7 @@ impl Agent {
             ai: Runs::new(),
             data_dir: state.data_dir().to_path_buf(),
             host: Host::BuiltIn(Box::new(state.clone())),
+            retry_wait: crate::run::RETRY_WAIT,
         }
     }
 
@@ -64,6 +68,7 @@ impl Agent {
             ai: Runs::new(),
             data_dir,
             host: Host::Remote(Arc::new(host)),
+            retry_wait: crate::run::RETRY_WAIT,
         }
     }
 

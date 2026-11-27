@@ -86,6 +86,40 @@ pub struct StreamParser {
     calls: BTreeMap<u64, PartialCall>,
     /// Cloud Code's events carry their own state (see [`super::cloud_code`]).
     cloud: cloud_code::Parser,
+    /// The error [`StreamParser::line`] returned is the provider's servers
+    /// being busy or failing for now (overloaded, an internal error).
+    pub failed_transiently: bool,
+}
+
+/// Whether an error a provider streamed is a passing one: Anthropic's
+/// `overloaded_error`/`api_error`, OpenAI's `server_error`, Google's
+/// `UNAVAILABLE`/`INTERNAL`, or a 5xx code.
+pub fn transient_error(error: &Value) -> bool {
+    const KINDS: &[&str] = &[
+        "overloaded_error",
+        "overloaded",
+        "api_error",
+        "server_error",
+        "internal_error",
+        "internal_server_error",
+        "service_unavailable",
+        "timeout",
+        "unavailable",
+        "internal",
+        "deadline_exceeded",
+    ];
+    let named = |key: &str| {
+        error
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|name| KINDS.contains(&name.to_ascii_lowercase().as_str()))
+    };
+    let coded = error
+        .get("code")
+        .and_then(Value::as_u64)
+        .and_then(|code| u16::try_from(code).ok())
+        .is_some_and(super::transient_status);
+    named("type") || named("code") || named("status") || coded
 }
 
 impl StreamParser {
@@ -100,6 +134,7 @@ impl StreamParser {
             done: false,
             calls: BTreeMap::new(),
             cloud: cloud_code::Parser::default(),
+            failed_transiently: false,
         }
     }
 
@@ -153,6 +188,7 @@ impl StreamParser {
             return Ok(Vec::new());
         };
         if let Some(error) = event.get("error").filter(|e| !e.is_null()) {
+            self.failed_transiently = transient_error(error);
             return Err(error_text(error));
         }
         // Cloud Code wraps every event in `{"response": …}`: its parser owns
@@ -323,6 +359,7 @@ impl StreamParser {
             }
             "response.failed" => {
                 let error = &event["response"]["error"];
+                self.failed_transiently = transient_error(error);
                 return Err(if error.is_null() {
                     "the reply failed".into()
                 } else {
@@ -337,11 +374,12 @@ impl StreamParser {
                 return Err(format!("the reply stopped before it was done ({reason})"));
             }
             "error" => {
+                self.failed_transiently = transient_error(event);
                 return Err(event
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or("the provider had an error")
-                    .to_string())
+                    .to_string());
             }
             _ => {}
         }

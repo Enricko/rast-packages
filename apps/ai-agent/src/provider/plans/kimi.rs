@@ -58,7 +58,7 @@ pub(crate) fn extra_headers(
     }
     vec![
         ("X-Msh-Platform", PLATFORM.to_string()),
-        ("X-Msh-Version", env!("CARGO_PKG_VERSION").to_string()),
+        ("X-Msh-Version", crate::VERSION.to_string()),
         ("X-Msh-Device-Name", "rast".to_string()),
         ("X-Msh-Device-Model", device_model()),
         ("X-Msh-Device-Id", account.to_string()),

@@ -41,7 +41,7 @@ fn device_id() -> String {
 fn device_headers(id: &str) -> Vec<(&'static str, String)> {
     vec![
         ("X-Msh-Platform", PLATFORM.to_string()),
-        ("X-Msh-Version", env!("CARGO_PKG_VERSION").to_string()),
+        ("X-Msh-Version", crate::VERSION.to_string()),
         // Linux servers have no portable hostname in std; a constant is
         // enough (the reference sends the machine's name, which nothing
         // validates).

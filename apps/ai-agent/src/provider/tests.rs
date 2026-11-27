@@ -1069,3 +1069,59 @@ fn files_go_in_each_protocols_shape() {
     assert_eq!(joined.text, "one\n\ntwo");
     assert_eq!(joined.files.len(), 3);
 }
+
+#[test]
+fn passing_failures_are_told_apart_from_lasting_ones() {
+    for status in [408, 500, 502, 503, 504, 520, 524, 529] {
+        assert!(transient_status(status), "{status}");
+    }
+    for status in [400, 401, 403, 404, 422, 429] {
+        assert!(!transient_status(status), "{status}");
+    }
+    let streamed = |protocol: Protocol, line: &str| {
+        let mut parser = StreamParser::for_protocol(protocol);
+        let error = parser.line(line).unwrap_err();
+        (error, parser.failed_transiently)
+    };
+    // Anthropic: overloaded and its own server errors pass; a bad request lasts.
+    let (said, passing) = streamed(
+        Protocol::Anthropic,
+        r#"data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+    );
+    assert!(passing && said.contains("Overloaded"), "{said}");
+    let (_, passing) = streamed(
+        Protocol::Anthropic,
+        r#"data: {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long"}}"#,
+    );
+    assert!(!passing);
+    // OpenAI's Responses: a failed response with a server error, or the
+    // stream's error event.
+    let (_, passing) = streamed(
+        Protocol::Responses,
+        r#"data: {"type":"response.failed","response":{"error":{"code":"server_error","message":"An error occurred"}}}"#,
+    );
+    assert!(passing);
+    let (_, passing) = streamed(
+        Protocol::Responses,
+        r#"data: {"type":"error","code":"server_error","message":"Try again"}"#,
+    );
+    assert!(passing);
+    let (_, passing) = streamed(
+        Protocol::Responses,
+        r#"data: {"type":"response.failed","response":{"error":{"code":"invalid_prompt","message":"No"}}}"#,
+    );
+    assert!(!passing);
+    // Google-shaped: a 503 code or UNAVAILABLE.
+    let (_, passing) = streamed(
+        Protocol::Chat,
+        r#"data: {"error":{"code":503,"status":"UNAVAILABLE","message":"The model is overloaded."}}"#,
+    );
+    assert!(passing);
+    let (_, passing) = streamed(
+        Protocol::Chat,
+        r#"data: {"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Bad"}}"#,
+    );
+    assert!(!passing);
+    assert!(ChatError::transient("broke off".into()).transient);
+    assert!(!ChatError::from("no key").transient);
+}

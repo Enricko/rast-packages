@@ -60,6 +60,23 @@ export interface Message {
   error: string;
   createdAt: number;
   finishedAt: number | null;
+  /** A reply waiting to try its step again (after a timeout, the network, a busy provider). */
+  retry?: Retry | null;
+}
+
+export interface Retry {
+  /** This try again, from 1 to `of`. */
+  attempt: number;
+  of: number;
+  /** Time left before it starts, when the server sent it. */
+  inMs: number;
+  /** What failed. */
+  error: string;
+}
+
+/** "Retrying 1/10 in 30s" */
+export function retryLabel(retry: Pick<Retry, "attempt" | "of">, msLeft: number): string {
+  return `Retrying ${retry.attempt}/${retry.of} in ${Math.max(0, Math.ceil(msLeft / 1000))}s`;
 }
 
 export interface Conversation {

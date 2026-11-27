@@ -29,6 +29,7 @@ import {
   formatElapsed,
   chatTotals,
   replyActivity,
+  retryLabel,
   groupByDay,
   maySkipAsking,
   messageText,
@@ -50,6 +51,7 @@ import {
   type Message,
   type MessageEvent,
   type Options,
+  type Retry,
   type ToolBlock,
 } from "./model";
 import { mountSettings, type SettingsView } from "./settings";
@@ -614,6 +616,16 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     if (!current) return;
     try {
       await ctx.api.post(`/api/ai/conversations/${encodeURIComponent(current.conversation.id)}/stop`);
+    } catch (error) {
+      ctx.toast.error(errorMessage(error));
+    }
+  }
+
+  /** A reply waiting to try again tries now. */
+  async function retryNow(): Promise<void> {
+    if (!current) return;
+    try {
+      await ctx.api.post(`/api/ai/conversations/${encodeURIComponent(current.conversation.id)}/retry`);
     } catch (error) {
       ctx.toast.error(errorMessage(error));
     }
@@ -1194,8 +1206,13 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         parts.push(reuse(index, sig, () => toolCard(message, block, opened)));
       }
     });
+    // Waiting to try again: the try, a countdown and what failed.
+    const retry = streaming ? message.retry : null;
+    if (retry) {
+      parts.push(reuse(-1, `retry|${retry.attempt}|${retry.inMs}|${retry.error}`, () => retryBanner(retry)));
+    }
     // While it is written: what it is doing, and for how long.
-    const activity = replyActivity(message);
+    const activity = retry ? null : replyActivity(message);
     if (activity) {
       parts.push(
         reuse(-1, `working|${activity}|${message.createdAt}`, () =>
@@ -1335,6 +1352,24 @@ function mountAgentApp(ctx: AppContext): AppInstance {
 
   /** The typing caret goes at the end of the last line of text. */
   /** A time that counts up from `since` (kept current by `ticker`). */
+  function retryBanner(retry: Retry): HTMLElement {
+    const until = Date.now() + retry.inMs;
+    return h(
+      "div",
+      { class: "ai-retry", role: "status" },
+      h("span", { class: "ai-retry-icon", ariaHidden: true }, iconSvg("refresh", 14)),
+      h(
+        "span",
+        { class: "ai-retry-text" },
+        h("span", { class: "ai-retry-label", dataset: { until: String(until), attempt: String(retry.attempt), of: String(retry.of) } }, retryLabel(retry, retry.inMs)),
+        h("span", { class: "ai-retry-error", title: retry.error }, retry.error),
+      ),
+      current && !current.readOnly
+        ? h("button", { class: "btn btn-sm ai-retry-now", type: "button", onClick: () => void retryNow() }, "Retry now")
+        : null,
+    );
+  }
+
   function elapsedSince(since: number): HTMLElement {
     return h("span", { class: "ai-working-time", ariaHidden: true, dataset: { since: String(since) } }, formatElapsed(Date.now() - since));
   }
@@ -1507,10 +1542,14 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   };
   document.addEventListener("keydown", typeToCompose);
 
-  // Counting times of replies being written, once a second.
+  // Counting times of replies being written, and down to tries again, once a second.
   const ticker = window.setInterval(() => {
     for (const el of ctx.root.querySelectorAll<HTMLElement>(".ai-working-time[data-since]")) {
       el.textContent = formatElapsed(Date.now() - Number(el.dataset.since));
+    }
+    for (const el of ctx.root.querySelectorAll<HTMLElement>(".ai-retry-label[data-until]")) {
+      const retry = { attempt: Number(el.dataset.attempt), of: Number(el.dataset.of) };
+      el.textContent = retryLabel(retry, Number(el.dataset.until) - Date.now());
     }
   }, 1000);
   ctx.onDispose(() => {

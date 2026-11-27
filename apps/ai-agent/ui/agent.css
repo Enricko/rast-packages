@@ -1129,6 +1129,62 @@
   font-size: var(--font-size-sm);
 }
 
+/* A reply waiting to try again: the try, its countdown, what failed. */
+.ai-retry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning) 7%, transparent);
+  font-size: var(--font-size-sm);
+}
+
+.ai-retry-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--warning);
+  animation: ai-retry-spin 2s linear infinite;
+}
+
+@keyframes ai-retry-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-retry-icon {
+    animation: none;
+  }
+}
+
+.ai-retry-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ai-retry-label {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-retry-error {
+  overflow: hidden;
+  color: var(--text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-retry-now {
+  flex: none;
+}
+
 /* Tool calls: one card per call, in reply order, joined like steps. */
 /* Artifacts: a card in the chat, a panel beside it (artifact.ts). */
 .ai-artifact-card {

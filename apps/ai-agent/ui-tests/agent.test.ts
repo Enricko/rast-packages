@@ -9,6 +9,7 @@ import {
   countedBars,
   leftTone,
   parseTokens,
+  retryLabel,
   type QuotaAccount,
   resetIn,
   windowLeft,
@@ -468,3 +469,10 @@ test("quota bars show what is left, coloured by how much", () => {
   assert.equal(leftTone(null), "");
 });
 
+test("a reply waiting to try again counts down in whole seconds", () => {
+  const retry = { attempt: 1, of: 10 };
+  assert.equal(retryLabel(retry, 30_000), "Retrying 1/10 in 30s");
+  assert.equal(retryLabel(retry, 29_001), "Retrying 1/10 in 30s");
+  assert.equal(retryLabel({ attempt: 7, of: 10 }, 400), "Retrying 7/10 in 1s");
+  assert.equal(retryLabel(retry, -250), "Retrying 1/10 in 0s");
+});
