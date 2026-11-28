@@ -54,6 +54,12 @@ export interface Message {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  /** Input read back from the provider's cache (part of inputTokens). */
+  cacheReadTokens?: number;
+  /** What the model read and wrote at its last step: how full its context is. */
+  contextTokens?: number;
+  /** Time spent writing (for tokens per second). */
+  writingMs?: number;
   /** What the reply is worth at API prices, USD (0: unknown or none). */
   estimatedCost?: number;
   status: "streaming" | "waiting" | "done" | "stopped" | "error";
@@ -613,6 +619,12 @@ export function windowLeft(w: QuotaWindow): number | null {
   return used === null ? null : Math.max(0, Math.min(100, 100 - used));
 }
 
+/** What [`countedBars`] reads of an account. */
+export interface CountedAccount {
+  counted: { hours5: Counted; week: Counted };
+  limits?: KeptLimits;
+}
+
 /** A bar of what RAST counted for an account in a window. */
 export interface CountedBar {
   key: "hours5" | "week";
@@ -635,7 +647,7 @@ export interface CountedBar {
  * the use seen when the provider said the account was out); without one,
  * beside the busiest of `peers` (its provider's accounts).
  */
-export function countedBars(account: QuotaAccount, peers: QuotaAccount[]): CountedBar[] {
+export function countedBars(account: CountedAccount, peers: CountedAccount[]): CountedBar[] {
   const kept = account.limits ?? {};
   return (["hours5", "week"] as const).map((key) => {
     const counted = account.counted[key];
@@ -1059,3 +1071,178 @@ export function groupByDay(items: Conversation[], now = Date.now()): Array<{ lab
     .sort((a, b) => pinned(b) - pinned(a) || b.newest - a.newest)
     .map(({ label, items }) => ({ label, items: [...items].sort((a, b) => b.updatedAt - a.updatedAt) }));
 }
+
+// ------------------------------------------------- the bar under the box
+
+/** GET /api/ai/quota: the limits of the providers this account may use. */
+export interface ChatQuota {
+  now: number;
+  providers: ChatQuotaProvider[];
+}
+
+export interface ChatQuotaProvider {
+  id: string;
+  name: string;
+  kind: string;
+  kindLabel: string;
+  signsIn: boolean;
+  accounts: ChatQuotaAccount[];
+}
+
+export interface ChatQuotaAccount extends CountedAccount {
+  id: string;
+  /** Who signed in or the key's name ("" when it is not this account's to see). */
+  label: string;
+  /** "plus", "pro", … ("" unknown or a key). */
+  plan: string;
+  first: boolean;
+  ready: boolean;
+  resting: { until: number; reason: string } | null;
+  quota: AccountQuota;
+}
+
+/** One limit as the bar shows it. */
+export interface UsageBar {
+  name: string;
+  /** Share used, 0–100. */
+  used: number;
+  /** When it starts again (ms). */
+  resetsAt?: number;
+}
+
+/**
+ * An account's limits: the windows its provider reported (5 hours, weekly,
+ * …), else what RAST counted against the limits it keeps (set in Quota, or
+ * seen when the provider last said the account was out).
+ */
+export function usageBars(account: ChatQuotaAccount, now: number): UsageBar[] {
+  const reported: UsageBar[] = [];
+  for (const w of account.quota.windows ?? []) {
+    const left = windowLeft(w);
+    if (left === null) continue;
+    const resetsAt = w.resetsAt && w.resetsAt > now ? w.resetsAt : undefined;
+    reported.push({ name: windowName(w.name), used: Math.round(100 - left), ...(resetsAt ? { resetsAt } : {}) });
+  }
+  if (reported.length) return reported.slice(0, 3);
+  return countedBars(account, [account])
+    .filter((bar) => bar.left !== null)
+    .map((bar) => ({
+      name: bar.key === "hours5" ? "5-hour window" : "7 days",
+      used: Math.round(100 - (bar.left ?? 100)),
+      ...(bar.leavesAt && bar.leavesAt > now ? { resetsAt: bar.leavesAt } : {}),
+    }));
+}
+
+function windowName(name: string): string {
+  const lower = name.trim().toLowerCase();
+  if (lower === "5 hours" || lower === "5h" || lower === "5-hour") return "5-hour window";
+  if (lower === "week" || lower === "7 days") return "Weekly";
+  return name;
+}
+
+/** The account a provider's chip shows: the first that may answer and has limits. */
+export function shownAccount(provider: ChatQuotaProvider, now: number): ChatQuotaAccount | null {
+  const withBars = provider.accounts.filter((a) => usageBars(a, now).length);
+  return withBars.find((a) => a.ready && !(a.resting && a.resting.until > now)) ?? withBars[0] ?? null;
+}
+
+/** "4h 59m", "29m", "2d 7h", "under a minute". */
+export function timeLeft(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "<1m";
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days) return hours ? `${days}d ${hours}h` : `${days}d`;
+  if (hours) return mins ? `${hours}h ${mins}m` : `${hours}h`;
+  return `${mins}m`;
+}
+
+/** What the chat used: for the bar under the message box. */
+export interface ChatStats {
+  /** Messages sent. */
+  turns: number;
+  /** Tool calls made. */
+  steps: number;
+  tokens: number;
+  /** Share of the input read back from the cache, 0–100 (null: none reported). */
+  cacheHit: number | null;
+  /** The last finished reply's writing speed (null: unknown). */
+  tokensPerSecond: number | null;
+  /** What the model read and wrote at the latest step (0: unknown). */
+  context: number;
+  /** The model of that reply. */
+  model: string;
+}
+
+export function chatStats(messages: Message[]): ChatStats {
+  let turns = 0;
+  let steps = 0;
+  let input = 0;
+  let output = 0;
+  let cached = 0;
+  let speed: number | null = null;
+  let context = 0;
+  let model = "";
+  for (const m of messages) {
+    if (m.role === "user") {
+      turns += 1;
+      continue;
+    }
+    steps += toolBlocks(m).length;
+    input += m.inputTokens || 0;
+    output += m.outputTokens || 0;
+    cached += m.cacheReadTokens || 0;
+    if (m.contextTokens) {
+      context = m.contextTokens;
+      model = m.model;
+    }
+    // Replies too short to time are left out.
+    if (m.status !== "streaming" && (m.writingMs ?? 0) >= 300 && m.outputTokens > 0) {
+      speed = (m.outputTokens * 1000) / (m.writingMs as number);
+    }
+  }
+  return {
+    turns,
+    steps,
+    tokens: input + output,
+    cacheHit: cached > 0 && input > 0 ? Math.min(100, (cached * 100) / input) : null,
+    tokensPerSecond: speed,
+    context,
+    model,
+  };
+}
+
+/**
+ * About how many tokens a model reads at once (its context window), by its
+ * family; null when the name says nothing known. Only for the bar's
+ * "how full" ring, so it is labelled "about".
+ */
+export function contextWindow(model: string): number | null {
+  const name = model.toLowerCase().replace(/^.*\//, "");
+  for (const [pattern, size] of CONTEXT_WINDOWS) if (pattern.test(name)) return size;
+  return null;
+}
+
+const CONTEXT_WINDOWS: ReadonlyArray<[RegExp, number]> = [
+  [/gemini/, 1_048_576],
+  [/claude|opus|sonnet|haiku/, 200_000],
+  [/gpt-4\.1/, 1_047_576],
+  [/gpt-oss/, 131_072],
+  [/gpt-[5-9]|codex|^o[134](-|$)/, 400_000],
+  [/gpt-4o|gpt-4-turbo/, 128_000],
+  [/grok-(4|code)/, 256_000],
+  [/grok/, 131_072],
+  [/deepseek/, 128_000],
+  [/qwen3-(coder|max)|qwen3\.[5-9]|qwen[4-9]/, 262_144],
+  [/qwen|qwq/, 131_072],
+  [/kimi|moonshot/, 262_144],
+  [/glm-(4\.[5-9]|[5-9])/, 200_000],
+  [/glm/, 128_000],
+  [/minimax/, 204_800],
+  [/codestral/, 256_000],
+  [/mistral|mixtral|pixtral|voxtral|devstral|magistral|ministral/, 128_000],
+  [/llama-?4/, 1_000_000],
+  [/llama|gemma|phi-?4/, 128_000],
+];
+

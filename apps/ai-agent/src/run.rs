@@ -56,6 +56,43 @@ pub const RETRY_TRIES: u32 = 10;
 /// The wait before each try again.
 pub const RETRY_WAIT: Duration = Duration::from_secs(30);
 
+/// What a reply used so far.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tally {
+    pub input: i64,
+    pub output: i64,
+    /// Input read back from the provider's cache (part of `input`).
+    pub cache_read: i64,
+    /// The last step's input and output: how full the model's context is.
+    pub context: i64,
+    /// Time spent writing (from the first word of each step to its end).
+    pub writing_ms: i64,
+}
+
+impl Tally {
+    /// A stored reply's, to go on from (after an answer to a tool request).
+    pub fn of(message: &super::Message) -> Self {
+        Self {
+            input: message.input_tokens,
+            output: message.output_tokens,
+            cache_read: message.cache_read_tokens,
+            context: message.context_tokens,
+            writing_ms: message.writing_ms,
+        }
+    }
+
+    /// Add one step.
+    pub fn add(&mut self, usage: &provider::Usage, writing_ms: i64) {
+        let input = usage.input.max(0);
+        let output = usage.output.max(0);
+        self.input += input;
+        self.output += output;
+        self.cache_read += usage.cache_read.clamp(0, input);
+        self.context = input + output;
+        self.writing_ms += writing_ms.max(0);
+    }
+}
+
 /// A reply waiting to try its step again.
 #[derive(Debug, Clone)]
 pub struct Retry {
@@ -230,7 +267,10 @@ pub struct ReplyJob {
     pub blocks: Vec<Value>,
     pub limits: Effective,
     /// Tokens the reply used before this run.
-    pub tokens: (i64, i64),
+    pub tokens: Tally,
+    /// The chat's title from its first message, while the model's first
+    /// answer is to name the chat (see [`super::naming`]).
+    pub naming: Option<String>,
 }
 
 impl Reservation {
@@ -261,8 +301,10 @@ enum Step {
         calls: Vec<provider::ToolCall>,
         usage: provider::Usage,
         quota: provider::limits::Quota,
+        /// Time spent writing.
+        ms: i64,
     },
-    Stopped(provider::Usage),
+    Stopped(provider::Usage, i64),
     Failed {
         error: ChatError,
         wrote: bool,
@@ -301,8 +343,8 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
             .messages
             .extend(super::turns_of(&Value::Array(before.clone())));
         match stream_step(state, run, &job, request).await {
-            Step::Stopped(usage) => {
-                count(state, &job, &mut tokens, usage).await;
+            Step::Stopped(usage, ms) => {
+                count(state, &job, &mut tokens, usage, ms).await;
                 break End::Stopped;
             }
             Step::Failed { error, wrote } if error.limit.is_some() => {
@@ -345,10 +387,21 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
                 calls,
                 usage,
                 quota,
+                ms,
             } => {
                 retries = 0;
                 super::accounts::store_quota(&state.db, &job.account_id, &quota).await;
-                count(state, &job, &mut tokens, usage).await;
+                count(state, &job, &mut tokens, usage, ms).await;
+                if let Some(title) = job.naming.take() {
+                    super::naming::start(
+                        state,
+                        &job,
+                        title,
+                        &history,
+                        &calls,
+                        &run.snapshot().blocks,
+                    );
+                }
                 if calls.is_empty() {
                     break End::Done;
                 }
@@ -433,7 +486,7 @@ async fn run_allowed_tools(
     state: &Agent,
     run: &Arc<Active>,
     job: &ReplyJob,
-    tokens: (i64, i64),
+    tokens: Tally,
 ) -> bool {
     loop {
         if run.cancelled() {
@@ -510,6 +563,9 @@ async fn stream_step(
         request.system.len() + request.messages.iter().map(Turn::chars).sum::<usize>();
     let (tx, mut rx) = mpsc::unbounded_channel::<Delta>();
     let cancel = run.cancel.clone();
+    let started = std::time::Instant::now();
+    // The first word: writing starts (the wait before it is reading).
+    let mut first: Option<std::time::Instant> = None;
     let mut reading = tokio::task::spawn_blocking(move || {
         provider::stream_chat(&request, &cancel, &mut |delta| {
             let _ = tx.send(delta);
@@ -548,8 +604,8 @@ async fn stream_step(
             biased;
             _ = run.stopped.notified() => break None,
             delta = rx.recv() => match delta {
-                Some(Delta::Text(t)) => { wrote += t.len(); pending_text.push_str(&t); }
-                Some(Delta::Reasoning(r)) => { wrote += r.len(); pending_reasoning.push_str(&r); }
+                Some(Delta::Text(t)) => { first.get_or_insert_with(std::time::Instant::now); wrote += t.len(); pending_text.push_str(&t); }
+                Some(Delta::Reasoning(r)) => { first.get_or_insert_with(std::time::Instant::now); wrote += r.len(); pending_reasoning.push_str(&r); }
                 None => {
                     // The reader is done (its sender dropped): take its result.
                     break Some((&mut reading).await.unwrap_or_else(|e| {
@@ -561,6 +617,7 @@ async fn stream_step(
         }
     };
     publish(&mut pending_text, &mut pending_reasoning);
+    let ms = first.unwrap_or(started).elapsed().as_millis() as i64;
     // Tokens the provider reported; otherwise about four characters each,
     // when anything was written (a refused request costs nothing).
     let tokens = |usage: provider::Usage, extra: usize| {
@@ -577,8 +634,8 @@ async fn stream_step(
         }
     };
     match result {
-        None => Step::Stopped(tokens(provider::Usage::default(), 0)),
-        Some(Ok(outcome)) if run.cancelled() => Step::Stopped(tokens(outcome.usage, 0)),
+        None => Step::Stopped(tokens(provider::Usage::default(), 0), ms),
+        Some(Ok(outcome)) if run.cancelled() => Step::Stopped(tokens(outcome.usage, 0), ms),
         Some(Ok(outcome)) => {
             let call_chars: usize = outcome
                 .calls
@@ -589,6 +646,7 @@ async fn stream_step(
                 usage: tokens(outcome.usage, call_chars),
                 calls: outcome.calls,
                 quota: outcome.quota,
+                ms,
             }
         }
         Some(Err(error)) => Step::Failed {
@@ -598,12 +656,17 @@ async fn stream_step(
     }
 }
 
-async fn count(state: &Agent, job: &ReplyJob, tokens: &mut (i64, i64), usage: provider::Usage) {
-    tokens.0 += usage.input;
-    tokens.1 += usage.output;
+async fn count(
+    state: &Agent,
+    job: &ReplyJob,
+    tokens: &mut Tally,
+    usage: provider::Usage,
+    writing_ms: i64,
+) {
     if usage.is_empty() {
         return;
     }
+    tokens.add(&usage, writing_ms);
     match super::record_usage(
         &state.db,
         job.owner.id,
@@ -681,7 +744,7 @@ async fn wait_to_retry(
     state: &Agent,
     run: &Arc<Active>,
     job: &ReplyJob,
-    tokens: (i64, i64),
+    tokens: Tally,
     attempt: u32,
     error: &str,
 ) -> bool {
@@ -711,7 +774,7 @@ async fn wait_to_retry(
 }
 
 /// Store the reply as it is (still being written) and show it.
-async fn progress(state: &Agent, run: &Arc<Active>, job: &ReplyJob, tokens: (i64, i64)) {
+async fn progress(state: &Agent, run: &Arc<Active>, job: &ReplyJob, tokens: Tally) {
     let (content, seq, retry) =
         run.with(|s| (Value::Array(s.blocks.clone()), s.seq, s.retry.clone()));
     if let Err(e) = store(&state.db, job, &content, "streaming", "", tokens, None).await {
@@ -746,18 +809,21 @@ async fn store(
     content: &Value,
     status: &str,
     error: &str,
-    tokens: (i64, i64),
+    tokens: Tally,
     finished_at: Option<i64>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE ai_messages SET content = ?, status = ?, error = ?, input_tokens = ?, output_tokens = ?,
-         finished_at = ? WHERE id = ?",
+         cache_read_tokens = ?, context_tokens = ?, writing_ms = ?, finished_at = ? WHERE id = ?",
     )
     .bind(content.to_string())
     .bind(status)
     .bind(error)
-    .bind(tokens.0)
-    .bind(tokens.1)
+    .bind(tokens.input)
+    .bind(tokens.output)
+    .bind(tokens.cache_read)
+    .bind(tokens.context)
+    .bind(tokens.writing_ms)
     .bind(finished_at)
     .bind(job.message_id)
     .execute(pool)

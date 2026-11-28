@@ -7,6 +7,32 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+### Added
+
+- **A bar under the message box.** What the chat used (messages, tool
+  steps, the last reply's tokens per second; tokens and the share of input
+  read back from the provider's cache), the limits of the provider that
+  answers (each window's time left and share used: "Codex 4h 59m 0% · 29m
+  79%"; a click lists every provider's with bars), and a ring of how full
+  the model's context is (by the model's family, so "about"). Replies keep
+  `cacheReadTokens`, `contextTokens` (the last step's input and output) and
+  `writingMs` (agent.db migration 0003); `GET /api/ai/quota` gives the
+  limits to everyone who chats, account names to administrators and plan
+  owners only.
+- **Chats named by their first answer.** Once the model's first step is
+  written, the same model names the chat in a few words, in a short request
+  of its own (counted as the owner's usage, its estimate added to the
+  reply's), so the list says what each chat is doing. A name the owner gave
+  stays; when naming fails, the first line of the message stays the title.
+
+### Changed
+
+- **One chip for the model and the effort** ("GPT-5 Low"), with a menu:
+  Model › opens a list to search, grouped by provider with its logo (the
+  provider's name stays on top while its models scroll under it; arrow keys
+  and Enter pick); Effort › the levels with what each does. Popovers open
+  inside AI Agent's window.
+
 ## [1.5.0] - 2026-11-28
 
 ### Added

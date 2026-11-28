@@ -21,7 +21,13 @@ use serde_json::{json, Value};
 use sqlx::Row;
 
 use crate::{
-    ai::{self, host::Agent, provider, run::ReplyJob, tools, Kind, LimitRule},
+    ai::{
+        self,
+        host::Agent,
+        provider,
+        run::{ReplyJob, Tally},
+        tools, Kind, LimitRule,
+    },
     audit::AuditLog,
     auth::{AdminUser, AuthUser, ClientIp},
     db::now_ms,
@@ -33,6 +39,7 @@ pub fn routes() -> Router<Agent> {
         .route("/api/ai/options", get(options))
         .route("/api/ai/whats-new", post(whats_new_seen))
         .route("/api/ai/usage", get(my_usage))
+        .route("/api/ai/quota", get(my_quota))
         .route(
             "/api/ai/conversations",
             get(list_conversations).post(create_conversation),
@@ -1242,7 +1249,7 @@ async fn reply_job(
     prepared: Prepared,
     message_id: i64,
     blocks: Vec<Value>,
-    tokens: (i64, i64),
+    tokens: Tally,
 ) -> AppResult<ReplyJob> {
     let Prepared {
         resolved,
@@ -1303,6 +1310,7 @@ async fn reply_job(
         blocks,
         limits,
         tokens,
+        naming: None,
     })
 }
 
@@ -1411,7 +1419,8 @@ async fn send_message(
     .bind(now)
     .fetch_one(&state.db)
     .await?;
-    if conversation.title.is_empty() {
+    let first = conversation.title.is_empty();
+    if first {
         conversation.title = match files.first() {
             Some(file) if text.trim().is_empty() => ai::title_from(&file.name),
             _ => ai::title_from(&text),
@@ -1433,9 +1442,14 @@ async fn send_message(
         prepared,
         reply_id,
         Vec::new(),
-        (0, 0),
+        Tally::default(),
     )
     .await?;
+    // The model's first answer names the chat (unless the owner renames it first).
+    let job = ReplyJob {
+        naming: first.then(|| conversation.title.clone()),
+        ..job
+    };
     reservation.start(state.clone(), job);
 
     let sent = ai::message(&state.db, user_id).await?.map(|m| m.json());
@@ -1601,7 +1615,7 @@ async fn decide_tool(
         prepared,
         message.id,
         blocks,
-        (message.input_tokens, message.output_tokens),
+        Tally::of(&message),
     )
     .await?;
     // Before the run publishes anything of its own.
@@ -3758,6 +3772,59 @@ async fn put_account_limits(
 async fn admin_quota(State(state): State<Agent>, admin: AdminUser) -> AppResult<Json<Value>> {
     let _ = admin;
     Ok(Json(quota_overview(&state, &Default::default()).await?))
+}
+
+/// GET /api/ai/quota — the limits of the providers this account may chat
+/// with, for the bar under the message box: per account its plan, the
+/// windows the provider last reported (5 hours, weekly, …), what RAST
+/// counted and the limits it keeps. Who signed in (or the key's name) shows
+/// to administrators and to a plan's owner; paused accounts are left out.
+async fn my_quota(State(state): State<Agent>, user: AuthUser) -> AppResult<Json<Value>> {
+    let limits = ai::effective_limits(&state, &user).await?;
+    let usable: Vec<ai::Provider> = ai::providers(&state.db)
+        .await?
+        .into_iter()
+        .filter(|p| p.enabled && limits.allows(&p.id) && p.usable_by(user.id))
+        .collect();
+    let overview = quota_overview(&state, &Default::default()).await?;
+    let mut providers = Vec::new();
+    for listed in overview["providers"].as_array().into_iter().flatten() {
+        let Some(provider) = usable.iter().find(|p| listed["id"] == p.id.as_str()) else {
+            continue;
+        };
+        let shows_who = user.is_admin() || provider.owner_id == Some(user.id);
+        let accounts: Vec<Value> = listed["accounts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|a| a["paused"] != true)
+            .map(|a| {
+                json!({
+                    "id": a["id"],
+                    "label": if shows_who { a["label"].clone() } else { json!("") },
+                    "plan": a.pointer("/signedIn/plan").cloned().unwrap_or(json!("")),
+                    "first": a["first"],
+                    "ready": a["ready"],
+                    "resting": a["resting"],
+                    "quota": a["quota"],
+                    "counted": {"hours5": a["counted"]["hours5"], "week": a["counted"]["week"]},
+                    "limits": a["limits"],
+                })
+            })
+            .collect();
+        providers.push(json!({
+            "id": provider.id,
+            "name": provider.name,
+            "kind": provider.kind.as_str(),
+            "kindLabel": provider.kind.label(),
+            "signsIn": provider.kind.signs_in(),
+            "rotation": listed["rotation"],
+            "accounts": accounts,
+        }));
+    }
+    Ok(Json(
+        json!({ "now": overview["now"], "providers": providers }),
+    ))
 }
 
 /// Whether RAST can ask the account's provider for its limits on demand

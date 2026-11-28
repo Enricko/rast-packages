@@ -19,6 +19,15 @@ import {
   viewOfUrl,
 } from "../src/apps/agent/view";
 import {
+  chatStats,
+  contextWindow,
+  shownAccount,
+  timeLeft,
+  usageBars,
+  type ChatQuotaAccount,
+  type Message,
+} from "../src/apps/agent/model";
+import {
   accountState,
   countedBars,
   leftTone,
@@ -606,3 +615,90 @@ test("pictures and file links in answers become links the viewer opens", () => {
   ]);
   assert.deepEqual(parseInline("Wow! [x](javascript:alert(1))"), [{ t: "text", v: "Wow! " }, { t: "text", v: "x" }]);
 });
+
+test("the bar under the message box adds up the chat", () => {
+  const user = (id: number): Message => ({
+    id,
+    conversationId: "c",
+    role: "user",
+    content: [{ type: "text", text: "hi" }],
+    providerId: null,
+    model: "",
+    inputTokens: 0,
+    outputTokens: 0,
+    status: "done",
+    error: "",
+    createdAt: 0,
+    finishedAt: 0,
+  });
+  const reply = (id: number, extra: Partial<Message>): Message => ({ ...user(id), role: "assistant", model: "claude-sonnet-5", ...extra });
+  const tool = { type: "tool" as const, id: "t", name: "read_file", input: {}, status: "done" as const };
+  const stats = chatStats([
+    user(1),
+    reply(2, { content: [tool, tool], inputTokens: 1000, outputTokens: 200, cacheReadTokens: 900, contextTokens: 700, writingMs: 4000 }),
+    user(3),
+    reply(4, { inputTokens: 3000, outputTokens: 100, cacheReadTokens: 2700, contextTokens: 1600, writingMs: 100 }),
+  ]);
+  assert.equal(stats.turns, 2);
+  assert.equal(stats.steps, 2);
+  assert.equal(stats.tokens, 4300);
+  assert.equal(stats.cacheHit, 90);
+  // The second reply was too quick to time: the first one's speed stays.
+  assert.equal(stats.tokensPerSecond, 50);
+  assert.equal(stats.context, 1600);
+  assert.equal(stats.model, "claude-sonnet-5");
+  assert.equal(chatStats([user(1)]).cacheHit, null);
+
+  assert.equal(contextWindow("anthropic/claude-sonnet-5"), 200_000);
+  assert.equal(contextWindow("gemini-3-pro"), 1_048_576);
+  assert.equal(contextWindow("GPT-6.2-Sol"), 400_000);
+  assert.equal(contextWindow("gpt-oss-120b"), 131_072);
+  assert.equal(contextWindow("GLM-5.3"), 200_000);
+  assert.equal(contextWindow("my-own-model"), null);
+
+  assert.equal(timeLeft(30_000), "<1m");
+  assert.equal(timeLeft(29 * 60_000), "29m");
+  assert.equal(timeLeft((4 * 60 + 59) * 60_000), "4h 59m");
+  assert.equal(timeLeft((2 * 24 + 7) * 3_600_000), "2d 7h");
+});
+
+test("the provider's limits show as bars, reported or counted", () => {
+  const now = 1_000_000;
+  const account = (extra: Partial<ChatQuotaAccount>): ChatQuotaAccount => ({
+    id: "a",
+    label: "",
+    plan: "plus",
+    first: true,
+    ready: true,
+    resting: null,
+    quota: {},
+    counted: { hours5: { calls: 0, tokens: 0 }, week: { calls: 0, tokens: 0 } },
+    ...extra,
+  });
+  const codex = account({
+    quota: {
+      windows: [
+        { name: "5 hours", usedPercent: 0.4, resetsAt: now + 299 * 60_000 },
+        { name: "Weekly", usedPercent: 79, resetsAt: now + 29 * 60_000 },
+        { name: "Credits" },
+      ],
+    },
+  });
+  assert.deepEqual(usageBars(codex, now), [
+    { name: "5-hour window", used: 0, resetsAt: now + 299 * 60_000 },
+    { name: "Weekly", used: 79, resetsAt: now + 29 * 60_000 },
+  ]);
+  // Without reported windows: what RAST counted against a limit it keeps.
+  const counted = account({
+    counted: { hours5: { calls: 3, tokens: 50_000, leavesAt: now + 60_000 }, week: { calls: 3, tokens: 50_000 } },
+    limits: { hours5: 200_000 },
+  });
+  assert.deepEqual(usageBars(counted, now), [{ name: "5-hour window", used: 25, resetsAt: now + 60_000 }]);
+  assert.deepEqual(usageBars(account({}), now), []);
+  // The chip shows an account that may answer.
+  const resting = { ...codex, id: "r", resting: { until: now + 1000, reason: "limit" } };
+  const provider = { id: "p", name: "Codex", kind: "codex", kindLabel: "ChatGPT (Codex)", signsIn: true, accounts: [resting, { ...codex, id: "b" }] };
+  assert.equal(shownAccount(provider, now)?.id, "b");
+  assert.equal(shownAccount({ ...provider, accounts: [account({})] }, now), null);
+});
+

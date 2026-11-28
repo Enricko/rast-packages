@@ -67,6 +67,12 @@ impl TestServer {
         .expect("config");
         let state = AppState::new(cfg).await.expect("state");
         let agent_db = if on_rast_db {
+            // AI Agent as it was built into RAST, on RAST's tables, with the
+            // columns agent.db added since (migrations/0003).
+            sqlx::raw_sql(include_str!("../migrations/0003_message_stats.sql"))
+                .execute(&state.db)
+                .await
+                .expect("agent.db's new columns");
             state.db.clone()
         } else {
             db::connect_with(
@@ -293,6 +299,19 @@ fn serve_fake(mut stream: std::net::TcpStream, log: &FakeLog) {
     }
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let request_line = request_line.trim().to_string();
+    // A chat's naming request (src/naming.rs): a title, kept out of the log.
+    if body["messages"][0]["content"]
+        .as_str()
+        .is_some_and(|system| system.starts_with("You name chats"))
+    {
+        let reply = json!({"choices": [{"delta": {"content": "\"Greeting a pirate.\"\nmore"}}]});
+        let usage = json!({"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 2}});
+        let _ = write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {reply}\n\ndata: {usage}\n\ndata: [DONE]\n\n"
+        );
+        return;
+    }
     log.lock()
         .unwrap()
         .push((request_line.clone(), auth.clone(), body.clone()));
@@ -471,6 +490,27 @@ fn fake_tool_reply(body: &Value) -> String {
 }
 
 /// Poll a conversation until its last reply is no longer being written.
+/// Wait for the chat's title from its first answer (the fake provider's
+/// "Greeting a pirate", 5 tokens).
+async fn ai_named(server: &TestServer, session: &Session, id: &str) -> Value {
+    for _ in 0..200 {
+        let (status, _, body) = server
+            .request(
+                "GET",
+                &format!("/api/ai/conversations/{id}"),
+                None,
+                session.headers(),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if body["conversation"]["title"] == "Greeting a pirate" {
+            return body;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the chat was not named");
+}
+
 async fn ai_finished(server: &TestServer, session: &Session, id: &str) -> Value {
     for _ in 0..200 {
         let (status, _, body) = server
@@ -768,6 +808,34 @@ async fn ai_agent_chat_limits_and_admin_view() {
         ),
         (Some(12), Some(5))
     );
+    // For the bar under the message box: what the model read and wrote at
+    // its last step, the cache's share and the time it wrote.
+    assert_eq!(reply["contextTokens"], 17, "{reply}");
+    assert_eq!(reply["cacheReadTokens"], 0);
+    assert!(
+        reply["writingMs"].as_i64().is_some_and(|ms| ms >= 0),
+        "{reply}"
+    );
+    // The limits of the providers Alice may use: the key's name is the
+    // administrators' to see.
+    let (status, _, quota) = server
+        .request("GET", "/api/ai/quota", None, alice.headers())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{quota}");
+    let account = &quota["providers"][0]["accounts"][0];
+    assert_eq!(account["label"], "", "{quota}");
+    assert_eq!(
+        account["quota"]["windows"][0]["name"], "Requests",
+        "{quota}"
+    );
+    assert!(account.get("keyHint").is_none(), "{quota}");
+    let (_, _, quota) = server
+        .request("GET", "/api/ai/quota", None, admin.headers())
+        .await;
+    assert_eq!(
+        quota["providers"][0]["accounts"][0]["label"], "Key …1234",
+        "{quota}"
+    );
     {
         let requests = log.lock().unwrap();
         let (line, auth, sent) = requests.last().unwrap();
@@ -811,11 +879,14 @@ async fn ai_agent_chat_limits_and_admin_view() {
         assert_eq!(roles, ["system", "user", "assistant", "user"]);
         assert_eq!(sent["messages"][2]["content"], "Ahoy there!");
     }
+    // The first answer named the chat, in a request of its own (5 tokens).
+    let named = ai_named(&server, &alice, &conversation).await;
+    assert_eq!(named["conversation"]["title"], "Greeting a pirate");
     let (_, _, body) = server
         .request("GET", "/api/ai/usage", None, alice.headers())
         .await;
-    assert_eq!(body["allowance"]["usedToday"], 34);
-    assert_eq!(body["allowance"]["usedWeek"], 34);
+    assert_eq!(body["allowance"]["usedToday"], 39);
+    assert_eq!(body["allowance"]["usedWeek"], 39);
     // Each reply's cost is kept as it was priced (micro-dollars).
     let (input, output, cost): (i64, i64, i64) = sqlx::query_as(
         "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cost) FROM ai_usage WHERE user_id = ?",
@@ -847,7 +918,7 @@ async fn ai_agent_chat_limits_and_admin_view() {
         .request("GET", "/api/ai/admin/usage?days=7", None, admin.headers())
         .await;
     assert_eq!(status, StatusCode::OK, "{history}");
-    assert_eq!(history["totals"]["today"]["tokens"], 34);
+    assert_eq!(history["totals"]["today"]["tokens"], 39);
     assert_eq!(
         history["totals"]["month"]["estimate"],
         json!(cost as f64 / 1e6)
@@ -1236,6 +1307,8 @@ async fn ai_provider_accounts_take_over_at_their_limits() {
     let reply = ai_say(&server, &admin, &conversation, "Hello").await;
     assert_eq!(reply["status"], "done", "{reply}");
     assert!(reply.to_string().contains("Ahoy there!"), "{reply}");
+    // The account that answered also named the chat.
+    ai_named(&server, &admin, &conversation).await;
     let keys = |log: &FakeLog| -> Vec<String> {
         log.lock()
             .unwrap()
@@ -1273,12 +1346,12 @@ async fn ai_provider_accounts_take_over_at_their_limits() {
     );
     assert_eq!(quota[1]["quota"]["windows"][0]["used"], 3);
     assert_eq!(quota[1]["quota"]["windows"][0]["limit"], 100);
-    assert_eq!(quota[1]["counted"]["hours5"]["calls"], 1, "{body}");
-    assert_eq!(quota[1]["counted"]["hours5"]["tokens"], 17);
+    assert_eq!(quota[1]["counted"]["hours5"]["calls"], 2, "{body}");
+    assert_eq!(quota[1]["counted"]["hours5"]["tokens"], 22);
     assert_eq!(quota[0]["counted"]["week"]["calls"], 0);
     // Per model, and only Codex plans are asked on demand.
     assert_eq!(quota[1]["models"][0]["model"], "fake-1", "{body}");
-    assert_eq!(quota[1]["models"][0]["hours5"]["calls"], 1);
+    assert_eq!(quota[1]["models"][0]["hours5"]["calls"], 2);
     assert_eq!(quota[1]["canCheck"], false);
     assert_eq!(body["rotation"]["mode"], "fill");
     let (status, _, body) = server
@@ -1541,7 +1614,7 @@ async fn ai_provider_accounts_take_over_at_their_limits() {
         .request("GET", "/api/ai/admin/quota", None, admin.headers())
         .await;
     assert_eq!(
-        body["providers"][0]["accounts"][0]["counted"]["hours5"]["calls"], 4,
+        body["providers"][0]["accounts"][0]["counted"]["hours5"]["calls"], 5,
         "{body}"
     );
 

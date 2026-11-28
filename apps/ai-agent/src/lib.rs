@@ -38,6 +38,7 @@ pub mod convert;
 pub mod files;
 pub mod guard;
 pub mod host;
+pub mod naming;
 pub mod prices;
 pub mod provider;
 pub mod run;
@@ -1635,6 +1636,12 @@ pub struct Message {
     pub model: String,
     pub input_tokens: i64,
     pub output_tokens: i64,
+    /// Input read back from the provider's cache (part of `input_tokens`).
+    pub cache_read_tokens: i64,
+    /// What the model read and wrote at its last step: how full its context is.
+    pub context_tokens: i64,
+    /// Time spent writing, for the reply's tokens per second.
+    pub writing_ms: i64,
     /// What the reply is worth at API prices, in micro-dollars (see
     /// [`prices::estimate`]; 0 before it was kept or when unknown).
     pub estimated_cost: i64,
@@ -1655,6 +1662,9 @@ impl Message {
             "model": self.model,
             "inputTokens": self.input_tokens,
             "outputTokens": self.output_tokens,
+            "cacheReadTokens": self.cache_read_tokens,
+            "contextTokens": self.context_tokens,
+            "writingMs": self.writing_ms,
             "estimatedCost": micros_to_usd(self.estimated_cost),
             "status": self.status,
             "error": self.error,
@@ -1679,6 +1689,9 @@ pub fn message_from_row(row: &sqlx::sqlite::SqliteRow) -> Message {
         model: row.get("model"),
         input_tokens: row.get("input_tokens"),
         output_tokens: row.get("output_tokens"),
+        cache_read_tokens: row.try_get("cache_read_tokens").unwrap_or(0),
+        context_tokens: row.try_get("context_tokens").unwrap_or(0),
+        writing_ms: row.try_get("writing_ms").unwrap_or(0),
         estimated_cost: row.get("estimated_cost"),
         status: row.get("status"),
         error: row.get("error"),
@@ -2142,6 +2155,9 @@ mod tests {
             model: String::new(),
             input_tokens: 0,
             output_tokens: 0,
+            cache_read_tokens: 0,
+            context_tokens: 0,
+            writing_ms: 0,
             estimated_cost: 0,
             status: status.into(),
             error: String::new(),

@@ -19,6 +19,8 @@ import { createAttachments, picture, sentFiles } from "./attachments";
 import { createSidePanel, type TabSpec } from "./panel";
 import { badgeOf, folderOf, isWebUrl, kindLabel, looksLikePath, viewOfChatFile, viewOfLink, viewOfPath, viewOfUrl, type ViewTarget } from "./view";
 import { createFileView } from "./viewer";
+import { createModelMenu } from "./modelmenu";
+import { createUsageBar } from "./usagebar";
 import { formatEstimate } from "./usage";
 import { renderMarkdown } from "./markdown";
 import { showWhatsNew, updateBanner } from "./update";
@@ -27,7 +29,6 @@ import {
   allowanceUsed,
   applyDelta,
   EFFORTS,
-  effortLabel,
   formatTokens,
   formatElapsed,
   chatTotals,
@@ -227,9 +228,9 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   const subEl = h("span", { class: "ai-sub" });
   const ownerEl = h("span", { class: "ai-owner hidden" });
   const headAvatar = h("span", { class: "ai-head-avatar" });
+  // The choices (agents, then each provider's models) and the one picked;
+  // the model menu under the message box shows and changes them.
   const picker = h("select", { class: "ai-picker", ariaLabel: "Agent or model" });
-  const pickFace = h("span", { class: "ai-pick-face" });
-  const pickWrap = h("label", { class: "ai-pick", title: "Agent or model" }, pickFace, iconSvg("chevronDown", 13), picker);
   const menuButton = h(
     "button",
     { class: "btn btn-ghost btn-icon btn-sm", type: "button", title: "More", ariaLabel: "More" },
@@ -287,20 +288,31 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     guardLabel,
     iconSvg("chevronDown", 12),
   );
-  const effortText = h("span", { class: "ai-chip-label" });
-  const effortButton = h(
-    "button",
-    { class: "ai-chip ai-effort", type: "button", title: "Effort: how hard the model thinks", ariaLabel: "Effort" },
-    iconSvg("gauge", 13),
-    effortText,
-    iconSvg("chevronDown", 12),
-  );
   guard.setAttribute("aria-haspopup", "menu");
-  effortButton.setAttribute("aria-haspopup", "menu");
   const composerNote = h("div", { class: "ai-composer-note small muted" });
   // Files for the next message: the attach button, a drop on the chat or a
   // paste; they upload at once and wait above the text.
   const attachments = createAttachments(ctx, () => updateComposer());
+  // The model and how hard it thinks: one chip with a menu.
+  const modelMenu = createModelMenu({
+    root: ctx.root,
+    picker,
+    providers: () => options?.providers ?? [],
+    effort: () => (current ? (current.conversation.effort ?? "") : draftEffort),
+    describe: (choice) => describe(choice),
+    onPick: (choice) => {
+      picker.value = choice;
+      picker.dispatchEvent(new Event("change"));
+    },
+    onEffort: (effort) => void setEffort(effort),
+  });
+  // What the chat used and the limits of the provider answering.
+  const usage = createUsageBar(ctx, {
+    root: ctx.root,
+    messages: () => current?.messages ?? [],
+    providerId: () => answering().providerId,
+    model: () => answering().model,
+  });
   const composer = h(
     "div",
     { class: "ai-composer" },
@@ -310,8 +322,9 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       { class: "ai-input-wrap" },
       attachments.tray,
       input,
-      h("div", { class: "ai-composer-bar" }, attachments.button, pickWrap, effortButton, guard, sendButton),
+      h("div", { class: "ai-composer-bar" }, attachments.button, modelMenu.button, guard, sendButton),
     ),
+    usage.el,
   );
   const dropHint = h("div", { class: "ai-drop-hint", ariaHidden: true }, iconSvg("attach", 22), h("span", {}, "Drop files to add them"));
   const main = h("section", { class: "ai-main" }, head, scrollArea, composer, dropHint);
@@ -528,15 +541,6 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       { anchor: guard, ariaLabel: "Permissions" },
     );
   });
-  effortButton.addEventListener("click", () => {
-    const effort = current ? current.conversation.effort ?? "" : draftEffort;
-    contextMenu(
-      0,
-      0,
-      EFFORTS.map((e) => ({ label: e.label, hint: e.hint, checked: e.id === effort, onClick: () => void setEffort(e.id) })),
-      { anchor: effortButton, ariaLabel: "Effort" },
-    );
-  });
   search.addEventListener("input", () => renderList());
   input.addEventListener("input", () => {
     autoGrow();
@@ -625,6 +629,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     renderAllowance();
     updateComposer();
     if (!current) renderThread();
+    void usage.refresh();
   }
 
   async function loadList(): Promise<void> {
@@ -1082,13 +1087,22 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     }
     picker.value = values.includes(wanted) ? wanted : (values[0] ?? "");
     picker.disabled = !values.length || Boolean(current?.readOnly);
-    pickWrap.classList.toggle("hidden", !values.length);
     drawPickFace();
   }
 
   function drawPickFace(): void {
-    const who = describe(picker.value);
-    pickFace.replaceChildren(...(who ? [who.picture(18), h("span", { class: "ai-pick-name" }, who.name)] : [h("span", {}, "Choose")]));
+    modelMenu.update();
+    usage.update();
+  }
+
+  /** The provider and model that answer in this chat (or would, in a new one). */
+  function answering(): { providerId: string | null; model: string } {
+    const body = choiceBody(current ? choiceOf(current.conversation) : picker.value);
+    if (body.agentId) {
+      const agent = options?.agents.find((a) => a.id === body.agentId);
+      return { providerId: agent?.providerId ?? null, model: agent?.model ?? "" };
+    }
+    return { providerId: body.providerId ?? null, model: body.model ?? "" };
   }
 
   function renderAllowance(): void {
@@ -1117,7 +1131,8 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     const mode = permissionMode(allowed);
     guardLabel.textContent = mode?.short ?? "Some allowed";
     guard.classList.toggle("is-on", mode?.id !== "ask");
-    effortText.textContent = effortLabel(current ? current.conversation.effort : draftEffort);
+    modelMenu.update();
+    usage.update();
     const allowance = options?.allowance;
     const waiting = !running && current?.messages[current.messages.length - 1]?.status === "waiting";
     input.placeholder = waiting ? "Or write something else" : "Message";
@@ -1131,6 +1146,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
 
   const bodies = new Map<number, { el: HTMLElement; frame: number }>();
   const allowanceRefresh = debounceTask(() => void loadOptions(), 400);
+  const quotaRefresh = debounceTask(() => void usage.refresh(), 1500);
 
   function renderThread(): void {
     thread.replaceChildren();
@@ -1730,6 +1746,8 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       if (listed && !event.running && event.message.role === "assistant" && options?.allowance && allowanceText(options.allowance)) {
         allowanceRefresh.run();
       }
+      // A reply that ended reported its provider's limits.
+      if (!event.running && event.message.role === "assistant") quotaRefresh.run();
       if (!current || current.conversation.id !== event.conversationId) return;
       const known = current.messages.some((m) => m.id === event.message.id);
       upsertMessage(current.messages, event.message);
@@ -1819,6 +1837,9 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     for (const unsubscribe of unsubscribers.splice(0)) unsubscribe();
     for (const entry of bodies.values()) if (entry.frame) window.cancelAnimationFrame(entry.frame);
     allowanceRefresh.cancel();
+    quotaRefresh.cancel();
+    usage.dispose();
+    modelMenu.close();
     updater.destroy();
     settings?.destroy();
   });
