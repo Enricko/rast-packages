@@ -7,6 +7,8 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-28
+
 ### Added
 
 - **The agent works in apps.** A new `use_app` tool works inside an app

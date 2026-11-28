@@ -11,6 +11,14 @@ export interface Release {
 
 export const WHATS_NEW: Release[] = [
   {
+    version: "1.8.0",
+    date: "2026-11-28",
+    items: [
+      "The agent works in the Craft apps: it opens your file in WordCraft, PdfCraft, GridCraft and others, reads it, types, runs the app's commands and saves it back to your files. Typing and commands ask first; a picture of the window shows in the chat.",
+      "Show on a card brings the app's window forward.",
+    ],
+  },
+  {
     version: "1.7.0",
     date: "2026-11-28",
     items: [
