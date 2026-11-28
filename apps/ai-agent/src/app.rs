@@ -441,6 +441,7 @@ pub async fn forget_all_but(
         "SELECT user_id FROM ai_conversations WHERE user_id NOT IN (SELECT value FROM json_each(?1))
          UNION SELECT user_id FROM ai_usage WHERE user_id NOT IN (SELECT value FROM json_each(?1))
          UNION SELECT user_id FROM ai_files WHERE user_id NOT IN (SELECT value FROM json_each(?1))
+         UNION SELECT user_id FROM ai_workspaces WHERE user_id NOT IN (SELECT value FROM json_each(?1))
          UNION SELECT owner_id FROM ai_providers
                WHERE owner_id IS NOT NULL AND owner_id NOT IN (SELECT value FROM json_each(?1))",
     )
@@ -456,6 +457,7 @@ pub async fn forget_all_but(
         "DELETE FROM ai_files WHERE user_id IN (SELECT value FROM json_each(?))",
         "DELETE FROM ai_conversations WHERE user_id IN (SELECT value FROM json_each(?))",
         "DELETE FROM ai_usage WHERE user_id IN (SELECT value FROM json_each(?))",
+        "DELETE FROM ai_workspaces WHERE user_id IN (SELECT value FROM json_each(?))",
         "UPDATE ai_providers SET owner_id = NULL WHERE owner_id IN (SELECT value FROM json_each(?))",
     ] {
         sqlx::query(sql).bind(&ids).execute(&mut *tx).await?;

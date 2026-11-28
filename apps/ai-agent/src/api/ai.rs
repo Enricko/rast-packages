@@ -50,6 +50,14 @@ pub fn routes() -> Router<Agent> {
                 .patch(update_conversation)
                 .delete(delete_conversation),
         )
+        .route(
+            "/api/ai/workspaces",
+            get(list_workspaces).post(create_workspace),
+        )
+        .route(
+            "/api/ai/workspaces/{id}",
+            axum::routing::patch(update_workspace).delete(delete_workspace),
+        )
         .route("/api/ai/conversations/{id}/messages", post(send_message))
         .route("/api/ai/files", post(upload_file))
         .route("/api/ai/files/{id}", get(get_file).delete(delete_file))
@@ -424,6 +432,8 @@ struct NewConversation {
     /// Tools that run without asking from the start.
     #[serde(default)]
     allowed_tools: Vec<String>,
+    /// The workspace it focuses on.
+    workspace_id: Option<String>,
 }
 
 /// Tools that may run without asking, without repeats.
@@ -450,6 +460,10 @@ async fn create_conversation(
 ) -> AppResult<Json<Value>> {
     let effort = ai::Effort::parse(&body.effort).map_err(AppError::bad_request)?;
     let allowed_tools = allowed_tool_list(&body.allowed_tools)?;
+    let workspace_id = match body.workspace_id.as_deref() {
+        None | Some("") => None,
+        Some(id) => Some(own_workspace(&state, &user, id).await?.id),
+    };
     let resolved = resolve(
         &state,
         &user,
@@ -470,13 +484,14 @@ async fn create_conversation(
         effort,
         waiting: false,
         pinned_at: None,
+        workspace_id,
         created_at: now,
         updated_at: now,
     };
     sqlx::query(
         "INSERT INTO ai_conversations (id, user_id, agent_id, provider_id, model, title, allowed_tools,
-                                       effort, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?)",
+                                       effort, workspace_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)",
     )
     .bind(&conversation.id)
     .bind(user.id)
@@ -485,6 +500,7 @@ async fn create_conversation(
     .bind(&conversation.model)
     .bind(serde_json::to_string(&conversation.allowed_tools).unwrap_or_else(|_| "[]".into()))
     .bind(conversation.effort.map_or("", ai::Effort::as_str))
+    .bind(&conversation.workspace_id)
     .bind(now)
     .bind(now)
     .execute(&state.db)
@@ -574,6 +590,8 @@ struct ConversationPatch {
     /// Keep it at the top of the list (pinning alone leaves its place in
     /// time as it is).
     pinned: Option<bool>,
+    /// Focus on a workspace (`""`: none).
+    workspace_id: Option<String>,
 }
 
 /// PATCH /api/ai/conversations/{id}
@@ -627,6 +645,12 @@ async fn update_conversation(
         conversation.provider_id = Some(resolved.provider.id);
         conversation.model = resolved.model;
     }
+    if let Some(workspace) = body.workspace_id.as_deref() {
+        conversation.workspace_id = match workspace {
+            "" => None,
+            id => Some(own_workspace(&state, &user, id).await?.id),
+        };
+    }
     if let Some(pinned) = body.pinned {
         conversation.pinned_at = if pinned {
             conversation.pinned_at.or(Some(now_ms()))
@@ -640,13 +664,14 @@ async fn update_conversation(
         && body.provider_id.is_none()
         && body.model.is_none()
         && body.allowed_tools.is_none()
-        && body.effort.is_none();
+        && body.effort.is_none()
+        && body.workspace_id.is_none();
     if !only_pinned {
         conversation.updated_at = now_ms();
     }
     sqlx::query(
         "UPDATE ai_conversations SET title = ?, agent_id = ?, provider_id = ?, model = ?, allowed_tools = ?,
-         effort = ?, pinned_at = ?, updated_at = ? WHERE id = ?",
+         effort = ?, pinned_at = ?, workspace_id = ?, updated_at = ? WHERE id = ?",
     )
     .bind(&conversation.title)
     .bind(&conversation.agent_id)
@@ -655,6 +680,7 @@ async fn update_conversation(
     .bind(serde_json::to_string(&conversation.allowed_tools).unwrap_or_else(|_| "[]".into()))
     .bind(conversation.effort.map_or("", ai::Effort::as_str))
     .bind(conversation.pinned_at)
+    .bind(&conversation.workspace_id)
     .bind(conversation.updated_at)
     .bind(&conversation.id)
     .execute(&state.db)
@@ -668,6 +694,192 @@ async fn update_conversation(
     Ok(Json(
         json!({ "conversation": conversation.json(None, running) }),
     ))
+}
+
+// ------------------------------------------------------------- workspaces
+
+/// A workspace of the account's own (another's is not found).
+async fn own_workspace(
+    state: &Agent,
+    user: &AuthUser,
+    id: &str,
+) -> AppResult<ai::workspace::Workspace> {
+    ai::workspace::get(&state.db, id)
+        .await?
+        .filter(|w| w.user_id == user.id)
+        .ok_or(AppError::NotFound("workspace not found"))
+}
+
+/// GET /api/ai/workspaces — the account's own, by name.
+async fn list_workspaces(State(state): State<Agent>, user: AuthUser) -> AppResult<Json<Value>> {
+    let items: Vec<Value> = ai::workspace::list(&state.db, user.id)
+        .await?
+        .iter()
+        .map(ai::workspace::Workspace::json)
+        .collect();
+    Ok(Json(json!({ "items": items })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceBody {
+    name: Option<String>,
+    /// `files` (default) or `server` (administrators).
+    place: Option<String>,
+    path: Option<String>,
+}
+
+/// Check a workspace's folder: one of the account's RAST files it may
+/// open, or (administrators) a folder on the server.
+async fn checked_folder(
+    state: &Agent,
+    user: &AuthUser,
+    place: ai::workspace::Place,
+    path: &str,
+) -> AppResult<String> {
+    let path = ai::workspace::normalize(path).map_err(AppError::bad_request)?;
+    match place {
+        ai::workspace::Place::Files => {
+            state.host.files_list(user, &path).await.map_err(|e| {
+                AppError::bad_request(format!("{path} cannot be the workspace: {e}"))
+            })?;
+        }
+        ai::workspace::Place::Server => {
+            if !user.is_admin() {
+                return Err(AppError::Forbidden(
+                    "only administrators work in folders on the server",
+                ));
+            }
+            let test = format!("test -d {}", ai::workspace::shell_quote(&path));
+            let found = match state.host.terminal_run(user, &test, 10).await {
+                Ok(output) => output.exit_code == Some(0),
+                // Without the terminal helper: what the app's account sees.
+                Err(_) => std::path::Path::new(&path).is_dir(),
+            };
+            if !found {
+                return Err(AppError::bad_request(format!(
+                    "{path} is not a folder on the server"
+                )));
+            }
+        }
+    }
+    Ok(path)
+}
+
+fn workspace_name(name: Option<&str>, path: &str) -> AppResult<String> {
+    let name = name.map(str::trim).unwrap_or("");
+    let name = if name.is_empty() {
+        path.rsplit('/').find(|p| !p.is_empty()).unwrap_or("Home")
+    } else {
+        name
+    };
+    bounded(name, "the name", ai::workspace::MAX_NAME)
+}
+
+fn workspaces_changed(state: &Agent, user_id: i64) {
+    state
+        .host
+        .publish_user("ai.workspaces", user_id, json!({ "changed": true }));
+}
+
+/// POST /api/ai/workspaces `{name?, place?, path}`
+async fn create_workspace(
+    State(state): State<Agent>,
+    user: AuthUser,
+    Json(body): Json<WorkspaceBody>,
+) -> AppResult<Json<Value>> {
+    let place = ai::workspace::Place::parse(body.place.as_deref().unwrap_or(""))
+        .map_err(AppError::bad_request)?;
+    let path = checked_folder(&state, &user, place, body.path.as_deref().unwrap_or("")).await?;
+    let name = workspace_name(body.name.as_deref(), &path)?;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_workspaces WHERE user_id = ?")
+        .bind(user.id)
+        .fetch_one(&state.db)
+        .await?;
+    if count >= ai::workspace::MAX_WORKSPACES {
+        return Err(AppError::bad_request(format!(
+            "an account keeps at most {} workspaces",
+            ai::workspace::MAX_WORKSPACES
+        )));
+    }
+    let now = now_ms();
+    let workspace = ai::workspace::Workspace {
+        id: ai::new_id(),
+        user_id: user.id,
+        name,
+        place,
+        path,
+        created_at: now,
+        updated_at: now,
+    };
+    sqlx::query(
+        "INSERT INTO ai_workspaces (id, user_id, name, place, path, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&workspace.id)
+    .bind(user.id)
+    .bind(&workspace.name)
+    .bind(workspace.place.as_str())
+    .bind(&workspace.path)
+    .bind(now)
+    .bind(now)
+    .execute(&state.db)
+    .await?;
+    workspaces_changed(&state, user.id);
+    Ok(Json(json!({ "workspace": workspace.json() })))
+}
+
+/// PATCH /api/ai/workspaces/{id} `{name?, path?}`
+async fn update_workspace(
+    State(state): State<Agent>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<WorkspaceBody>,
+) -> AppResult<Json<Value>> {
+    let mut workspace = own_workspace(&state, &user, &id).await?;
+    if let Some(place) = body.place.as_deref() {
+        workspace.place = ai::workspace::Place::parse(place).map_err(AppError::bad_request)?;
+    }
+    if body.path.is_some() || body.place.is_some() {
+        let path = body.path.clone().unwrap_or_else(|| workspace.path.clone());
+        workspace.path = checked_folder(&state, &user, workspace.place, &path).await?;
+    }
+    if body.name.is_some() {
+        workspace.name = workspace_name(body.name.as_deref(), &workspace.path)?;
+    }
+    workspace.updated_at = now_ms();
+    sqlx::query(
+        "UPDATE ai_workspaces SET name = ?, place = ?, path = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(&workspace.name)
+    .bind(workspace.place.as_str())
+    .bind(&workspace.path)
+    .bind(workspace.updated_at)
+    .bind(&workspace.id)
+    .execute(&state.db)
+    .await?;
+    workspaces_changed(&state, user.id);
+    Ok(Json(json!({ "workspace": workspace.json() })))
+}
+
+/// DELETE /api/ai/workspaces/{id} — its chats stay, outside any workspace;
+/// the folder is untouched.
+async fn delete_workspace(
+    State(state): State<Agent>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> AppResult<Json<Value>> {
+    let workspace = own_workspace(&state, &user, &id).await?;
+    sqlx::query("UPDATE ai_conversations SET workspace_id = NULL WHERE workspace_id = ?")
+        .bind(&workspace.id)
+        .execute(&state.db)
+        .await?;
+    sqlx::query("DELETE FROM ai_workspaces WHERE id = ?")
+        .bind(&workspace.id)
+        .execute(&state.db)
+        .await?;
+    workspaces_changed(&state, user.id);
+    Ok(Json(json!({ "deleted": workspace.id })))
 }
 
 /// DELETE /api/ai/conversations/{id} (what it used stays counted).
@@ -1276,10 +1488,21 @@ async fn reply_job(
                 .collect()
         })
         .unwrap_or_default();
+    let workspace = match conversation.workspace_id.as_deref() {
+        Some(id) => ai::workspace::get(&state.db, id)
+            .await?
+            .filter(|w| w.user_id == conversation.user_id),
+        None => None,
+    };
     let available = tools::available(state, user)
         .await
-        .restrict(resolved.agent.as_ref().and_then(|a| a.tools.as_deref()));
+        .restrict(resolved.agent.as_ref().and_then(|a| a.tools.as_deref()))
+        .in_workspace(workspace.as_ref().map(ai::workspace::Workspace::scope));
     let today = chrono::Local::now().format("%A, %-d %B %Y").to_string();
+    let mut system = ai::system_prompt(resolved.agent.as_ref(), &skills, user, &today, &available);
+    if let Some(scope) = &available.workspace {
+        system.push_str(&ai::workspace::context(state, user, scope, &available).await);
+    }
     let mut messages = ai::history(&earlier);
     ai::files::load(state.data_dir(), conversation.user_id, &mut messages).await;
     let request = provider::ChatRequest {
@@ -1287,7 +1510,7 @@ async fn reply_job(
         base_url: resolved.provider.effective_base_url(),
         api_key,
         model: resolved.model.clone(),
-        system: ai::system_prompt(resolved.agent.as_ref(), &skills, user, &today, &available),
+        system,
         messages,
         tools: available.specs(),
         temperature: resolved.agent.as_ref().and_then(|a| a.temperature),

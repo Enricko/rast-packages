@@ -21,6 +21,7 @@ import { badgeOf, folderOf, isWebUrl, kindLabel, looksLikePath, viewOfChatFile, 
 import { createFileView } from "./viewer";
 import { createModelMenu } from "./modelmenu";
 import { createUsageBar } from "./usagebar";
+import { createWorkspaces, placeText } from "./workspaces";
 import { formatEstimate } from "./usage";
 import { renderMarkdown } from "./markdown";
 import { showWhatsNew, updateBanner } from "./update";
@@ -103,6 +104,8 @@ function savedTab(value: unknown): SavedTab | null {
 }
 
 const CHOICE_KEY = "rast.agent.choice";
+/** The workspace the chat list shows (none: all chats). */
+const WORKSPACE_KEY = "rast.agent.workspace";
 
 /** Per-browser conveniences (last choice, effort, hidden chat list). */
 function readLocal(key: string): string | null {
@@ -194,6 +197,42 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     autocomplete: "off",
   });
   const list = h("nav", { class: "ai-list", ariaLabel: "Chats" });
+  // The workspace whose chats the list shows (and new chats start in).
+  let shownWorkspace: string | null = readLocal(WORKSPACE_KEY) || null;
+  let draftWorkspace: string | null = shownWorkspace;
+  const workspaces = createWorkspaces(ctx, {
+    root: ctx.root,
+    isAdmin,
+    onChange: () => {
+      if (shownWorkspace && !workspaces.byId(shownWorkspace)) showWorkspace(null);
+      if (draftWorkspace && !workspaces.byId(draftWorkspace)) draftWorkspace = null;
+      drawWorkspace();
+      renderList();
+    },
+  });
+  const wsSwitchLabel = h("span", { class: "ai-ws-switch-name" });
+  const wsSwitchIcon = h("span", { class: "ai-ws-switch-icon" });
+  const wsSwitch = h(
+    "button",
+    { class: "ai-ws-switch", type: "button", title: "Workspace", ariaLabel: "Workspace" },
+    wsSwitchIcon,
+    wsSwitchLabel,
+    iconSvg("chevronDown", 12),
+  );
+  wsSwitch.setAttribute("aria-haspopup", "dialog");
+  wsSwitch.addEventListener("click", () =>
+    workspaces.menu(wsSwitch, {
+      current: shownWorkspace,
+      none: "All chats",
+      noneHint: "Every chat, in any workspace",
+      onPick: (id) => {
+        showWorkspace(id);
+        if (!current) draftWorkspace = id;
+        drawWorkspace();
+        renderList();
+      },
+    }),
+  );
   const allowanceEl = h("div", { class: "ai-allowance hidden" });
   const updater = updateBanner(ctx, realtime, isAdmin);
   const settingsButton = h(
@@ -218,6 +257,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       h("span", { class: "ai-brand-name" }, "AI Agent"),
       sideClose,
     ),
+    wsSwitch,
     newButton,
     h("label", { class: "ai-search-wrap" }, iconSvg("search", 14), search),
     list,
@@ -290,6 +330,23 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   );
   guard.setAttribute("aria-haspopup", "menu");
   const composerNote = h("div", { class: "ai-composer-note small muted" });
+  // The chat's workspace: its folder, and a menu to move the chat.
+  const wsChipLabel = h("span", { class: "ai-chip-label" });
+  const wsChip = h(
+    "button",
+    { class: "ai-chip ai-ws-chip", type: "button", title: "Workspace", ariaLabel: "Workspace" },
+    iconSvg("folder", 13),
+    wsChipLabel,
+  );
+  wsChip.setAttribute("aria-haspopup", "dialog");
+  wsChip.addEventListener("click", () =>
+    workspaces.menu(wsChip, {
+      current: chatWorkspace(),
+      none: "No workspace",
+      noneHint: "The whole of your files",
+      onPick: (id) => void setChatWorkspace(id),
+    }),
+  );
   // Files for the next message: the attach button, a drop on the chat or a
   // paste; they upload at once and wait above the text.
   const attachments = createAttachments(ctx, () => updateComposer());
@@ -322,7 +379,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       { class: "ai-input-wrap" },
       attachments.tray,
       input,
-      h("div", { class: "ai-composer-bar" }, attachments.button, modelMenu.button, guard, sendButton),
+      h("div", { class: "ai-composer-bar" }, attachments.button, wsChip, modelMenu.button, guard, sendButton),
     ),
     usage.el,
   );
@@ -678,6 +735,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     current = null;
     draftAllowed = [];
     draftEffort = storedEffort();
+    draftWorkspace = shownWorkspace;
     ctx.saveState({});
     renderAll(true);
     input.focus();
@@ -716,6 +774,16 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   }
 
   // ----------------------------------------------------------- actions
+  /** Events heard per message: an answer to a request is older than an event that came while it ran. */
+  const heard = new Map<number, number>();
+  function hear(id: number): void {
+    heard.set(id, (heard.get(id) ?? 0) + 1);
+    if (heard.size > 2000) heard.delete(heard.keys().next().value as number);
+  }
+  function heardCount(id: number): number {
+    return heard.get(id) ?? 0;
+  }
+
   async function send(): Promise<void> {
     const text = input.value.trim();
     const files = attachments.ready();
@@ -737,6 +805,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
           ...choiceBody(choice),
           effort: draftEffort,
           allowedTools: draftAllowed,
+          ...(draftWorkspace ? { workspaceId: draftWorkspace } : {}),
         });
         id = created.conversation.id;
         conversations = [created.conversation, ...conversations.filter((c) => c.id !== id)];
@@ -750,12 +819,17 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       input.value = "";
       attachments.sent();
       autoGrow();
+      // A quick reply (or a quick refusal) may have ended before this
+      // answer came: what the events said is newer than its copy.
+      const heardReply = heardCount(sent.reply.id) > 0;
       if (current?.conversation.id === id) {
-        current.conversation = sent.conversation;
-        upsertMessage(current.messages, sent.message);
-        upsertMessage(current.messages, sent.reply);
+        if (!heardCount(sent.message.id)) upsertMessage(current.messages, sent.message);
+        if (!heardReply) {
+          current.conversation = sent.conversation;
+          upsertMessage(current.messages, sent.reply);
+        }
       }
-      upsertConversation(sent.conversation);
+      if (!heardReply) upsertConversation(sent.conversation);
       renderAll(false);
       followLatest();
     } catch (error) {
@@ -790,12 +864,19 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   async function decide(call: ToolBlock, decision: "allow" | "deny", always = false): Promise<void> {
     if (!current || current.readOnly) return;
     const id = current.conversation.id;
+    const owner = current.messages.find((m) => m.content.some((b) => b.type === "tool" && b.id === call.id));
+    const before = owner ? heardCount(owner.id) : 0;
     try {
       const body = await ctx.api.post<{ message: Message; conversation: Conversation }>(
         `/api/ai/conversations/${encodeURIComponent(id)}/tools/${encodeURIComponent(call.id)}`,
         { decision, always },
       );
       if (current?.conversation.id !== id) return;
+      // The tool and the next step may have run (and said so) before this answer came.
+      if (heardCount(body.message.id) !== before) {
+        updateComposer();
+        return;
+      }
       upsertMessage(current.messages, body.message);
       current.conversation = { ...current.conversation, ...body.conversation };
       if (body.conversation.running) current.seq = 0;
@@ -1009,10 +1090,14 @@ function mountAgentApp(ctx: AppContext): AppInstance {
 
   function renderList(): void {
     const query = search.value.trim().toLowerCase();
-    const items = conversations.filter((c) => !query || c.title.toLowerCase().includes(query));
+    const items = conversations.filter(
+      (c) => (!query || c.title.toLowerCase().includes(query)) && (!shownWorkspace || c.workspaceId === shownWorkspace),
+    );
     list.replaceChildren();
     if (!items.length) {
-      list.appendChild(h("p", { class: "ai-list-empty small muted" }, query ? "No chats match." : "No chats yet."));
+      list.appendChild(
+        h("p", { class: "ai-list-empty small muted" }, query ? "No chats match." : shownWorkspace ? "No chats in this workspace yet." : "No chats yet."),
+      );
       return;
     }
     for (const group of groupByDay(items)) {
@@ -1050,6 +1135,49 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         );
         list.appendChild(row);
       }
+    }
+  }
+
+  function showWorkspace(id: string | null): void {
+    shownWorkspace = id;
+    writeLocal(WORKSPACE_KEY, id ?? "");
+  }
+
+  /** The workspace of the open chat, or of the new one. */
+  function chatWorkspace(): string | null {
+    return current ? (current.conversation.workspaceId ?? null) : draftWorkspace;
+  }
+
+  function drawWorkspace(): void {
+    const shown = workspaces.byId(shownWorkspace);
+    wsSwitchIcon.replaceChildren(iconSvg(shown ? (shown.place === "server" ? "terminal" : "folder") : "layers", 15));
+    wsSwitchLabel.textContent = shown?.name ?? "All chats";
+    wsSwitch.title = shown ? `Workspace: ${shown.name} (${placeText(shown)})` : "All chats";
+    wsSwitch.classList.toggle("is-on", Boolean(shown));
+    const chat = workspaces.byId(chatWorkspace());
+    wsChipLabel.textContent = chat?.name ?? "";
+    wsChip.classList.toggle("is-on", Boolean(chat));
+    wsChip.classList.toggle("is-empty", !chat);
+    wsChip.title = chat ? `Works in ${chat.name}: ${placeText(chat)}` : "Choose a folder for this chat to focus on";
+    wsChip.classList.toggle("hidden", Boolean(current?.readOnly));
+  }
+
+  async function setChatWorkspace(id: string | null): Promise<void> {
+    if (!current) {
+      draftWorkspace = id;
+      drawWorkspace();
+      return;
+    }
+    const chat = current.conversation;
+    if ((chat.workspaceId ?? null) === id) return;
+    try {
+      const res = await ctx.api.patch<{ conversation: Conversation }>(`/api/ai/conversations/${encodeURIComponent(chat.id)}`, { workspaceId: id ?? "" });
+      if (current?.conversation.id === chat.id) current.conversation = { ...current.conversation, ...res.conversation };
+      upsertConversation(res.conversation);
+      drawWorkspace();
+      renderList();
+    } catch (error) {
+      ctx.toast.error(errorMessage(error));
     }
   }
 
@@ -1133,6 +1261,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     guard.classList.toggle("is-on", mode?.id !== "ask");
     modelMenu.update();
     usage.update();
+    drawWorkspace();
     const allowance = options?.allowance;
     const waiting = !running && current?.messages[current.messages.length - 1]?.status === "waiting";
     input.placeholder = waiting ? "Or write something else" : "Message";
@@ -1727,6 +1856,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   // ---------------------------------------------------------- realtime
   unsubscribers.push(
     realtime.on<DeltaEvent>("ai.delta", (delta) => {
+      hear(delta.messageId);
       if (!current || current.conversation.id !== delta.conversationId) return;
       const result = applyDelta(current, delta);
       if (result === "stale") void openConversation(current.conversation.id, { quiet: true });
@@ -1736,6 +1866,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       }
     }),
     realtime.on<MessageEvent>("ai.message", (event) => {
+      hear(event.message.id);
       const listed = conversations.find((c) => c.id === event.conversationId);
       const waiting = event.message.role === "assistant" ? event.message.status === "waiting" : listed?.waiting;
       if (listed && (listed.running !== event.running || listed.waiting !== waiting)) {
@@ -1779,6 +1910,10 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     realtime.on("ai.config", () => {
       void loadOptions();
       settings?.refresh();
+    }),
+    realtime.on("ai.workspaces", () => {
+      void workspaces.load();
+      void loadList();
     }),
     realtime.onResync(() => {
       void loadOptions();
@@ -1840,6 +1975,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     quotaRefresh.cancel();
     usage.dispose();
     modelMenu.close();
+    workspaces.close();
     updater.destroy();
     settings?.destroy();
   });
@@ -1848,7 +1984,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   const start = asParams(ctx.params);
   renderAll(false);
   void (async () => {
-    await Promise.all([loadOptions(), loadList()]);
+    await Promise.all([loadOptions(), loadList(), workspaces.load()]);
     if (disposed) return;
     const loaded = options as Options | null;
     showWhatsNew(ctx, loaded?.version, loaded?.whatsNewSeen);

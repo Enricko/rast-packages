@@ -98,6 +98,8 @@ export interface Conversation {
   effort?: Effort;
   /** When its owner pinned it to the top of the list (null: not pinned). */
   pinnedAt?: number | null;
+  /** The workspace it focuses on (null: none). */
+  workspaceId?: string | null;
   createdAt: number;
   updatedAt: number;
   running: boolean;

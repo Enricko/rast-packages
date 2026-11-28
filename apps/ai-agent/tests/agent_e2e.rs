@@ -68,11 +68,15 @@ impl TestServer {
         let state = AppState::new(cfg).await.expect("state");
         let agent_db = if on_rast_db {
             // AI Agent as it was built into RAST, on RAST's tables, with the
-            // columns agent.db added since (migrations/0003).
+            // columns agent.db added since (migrations/0003, 0004).
             sqlx::raw_sql(include_str!("../migrations/0003_message_stats.sql"))
                 .execute(&state.db)
                 .await
                 .expect("agent.db's new columns");
+            sqlx::raw_sql(include_str!("../migrations/0004_workspaces.sql"))
+                .execute(&state.db)
+                .await
+                .expect("agent.db's workspaces");
             state.db.clone()
         } else {
             db::connect_with(
@@ -442,6 +446,15 @@ fn fake_tool_reply(body: &Value) -> String {
         }
         if text.contains("list") {
             calls.push(("list_files", json!({"path": "/"})));
+        }
+        if text.contains("relative") {
+            calls.push((
+                "write_file",
+                json!({"path": "plan.md", "content": "Step one"}),
+            ));
+        }
+        if text.contains("escape") {
+            calls.push(("read_file", json!({"path": "/outside.txt"})));
         }
         if text.contains("fetch") {
             calls.push(("fetch_url", json!({"url": "http://127.0.0.1:9/secret"})));
@@ -1966,6 +1979,215 @@ async fn ai_agent_files_go_with_messages() {
         .await
         .unwrap();
     assert_eq!(left, 0);
+}
+
+/// A workspace keeps a chat's file tools in its folder: relative paths are
+/// inside it, a path outside is refused, the model is told what is there,
+/// and only its owner uses it.
+#[tokio::test]
+async fn ai_workspaces_keep_a_chat_in_its_folder() {
+    let server = TestServer::start().await;
+    server
+        .create_user("admin", ADMIN_PASSWORD, Role::Admin)
+        .await;
+    server.create_user("alice", USER_PASSWORD, Role::User).await;
+    server.create_user("bob", USER_PASSWORD, Role::User).await;
+    let admin = server.login("admin", ADMIN_PASSWORD).await;
+    let alice = server.login("alice", USER_PASSWORD).await;
+    let bob = server.login("bob", USER_PASSWORD).await;
+    for name in ["alice", "bob"] {
+        let id = server.user_id(name).await;
+        let (status, _, body) = server
+            .request(
+                "PUT",
+                &format!("/api/users/{id}/access-rules"),
+                Some(json!({"folderRules": [], "appRules": [
+                    {"appId": "agent", "rule": "allow"},
+                    {"appId": "files", "rule": "allow"}
+                ]})),
+                admin.headers_with_csrf(),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/packages/apps/agent/install",
+            None,
+            admin.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (addr, log) = fake_provider();
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/ai/providers",
+            Some(json!({
+                "kind": "custom",
+                "name": "Local",
+                "baseUrl": format!("http://{addr}/v1"),
+                "apiKey": "sk-test-secret-1234",
+                "models": ["tools"],
+            })),
+            admin.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let provider_id = body["provider"]["id"].as_str().unwrap().to_string();
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/files/mkdir",
+            Some(json!({"path": "/site"})),
+            alice.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A folder of Alice's files; a missing one and the server are refused.
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/ai/workspaces",
+            Some(json!({"path": "/site/"})),
+            alice.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workspace"]["name"], "site");
+    assert_eq!(body["workspace"]["place"], "files");
+    assert_eq!(body["workspace"]["path"], "/site");
+    let workspace_id = body["workspace"]["id"].as_str().unwrap().to_string();
+    for (folder, expected) in [
+        (json!({"path": "/nowhere"}), StatusCode::BAD_REQUEST),
+        (json!({"path": "/site/../etc"}), StatusCode::BAD_REQUEST),
+        (
+            json!({"place": "server", "path": "/tmp"}),
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        let (status, _, body) = server
+            .request(
+                "POST",
+                "/api/ai/workspaces",
+                Some(folder),
+                alice.headers_with_csrf(),
+            )
+            .await;
+        assert_eq!(status, expected, "{body}");
+    }
+    let (_, _, body) = server
+        .request("GET", "/api/ai/workspaces", None, alice.headers())
+        .await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 1, "{body}");
+    let (_, _, body) = server
+        .request("GET", "/api/ai/workspaces", None, bob.headers())
+        .await;
+    assert_eq!(body["items"], json!([]));
+    // Only its owner starts a chat in it.
+    let (status, _, _) = server
+        .request(
+            "POST",
+            "/api/ai/conversations",
+            Some(json!({"providerId": provider_id, "model": "tools", "workspaceId": workspace_id})),
+            bob.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/ai/conversations",
+            Some(json!({
+                "providerId": provider_id,
+                "model": "tools",
+                "workspaceId": workspace_id,
+                "allowedTools": ["write_file", "read_file"],
+            })),
+            alice.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["conversation"]["workspaceId"], workspace_id.as_str());
+    let id = body["conversation"]["id"].as_str().unwrap().to_string();
+
+    // A relative path lands inside the folder.
+    let reply = ai_say(&server, &alice, &id, "a relative note").await;
+    let calls = ai_tools(&reply);
+    assert_eq!(calls[0]["status"], "done", "{reply}");
+    assert_eq!(calls[0]["output"], "Created /site/plan.md (8 B).");
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/files/text?path=/site/plan.md",
+            None,
+            alice.headers(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["content"], "Step one");
+    // The model is told about the workspace and what is at its top.
+    let reply = ai_say(&server, &alice, &id, "an escape").await;
+    let calls = ai_tools(&reply);
+    assert_eq!(calls[0]["status"], "error", "{reply}");
+    assert!(
+        calls[0]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("/outside.txt is outside this chat's workspace \"site\" (/site)"),
+        "{reply}"
+    );
+    let sent = log.lock().unwrap().last().unwrap().2.clone();
+    let system = sent["messages"][0]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert!(system.contains("# Workspace"), "{system}");
+    assert!(
+        system.contains("works in the workspace \"site\": /site in their RAST files"),
+        "{system}"
+    );
+    assert!(system.contains("At its top:\nplan.md"), "{system}");
+
+    // Leaving it: the chat stays, outside any workspace.
+    let (status, _, body) = server
+        .request(
+            "DELETE",
+            &format!("/api/ai/workspaces/{workspace_id}"),
+            None,
+            bob.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, _, body) = server
+        .request(
+            "DELETE",
+            &format!("/api/ai/workspaces/{workspace_id}"),
+            None,
+            alice.headers_with_csrf(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, _, body) = server
+        .request(
+            "GET",
+            &format!("/api/ai/conversations/{id}"),
+            None,
+            alice.headers(),
+        )
+        .await;
+    assert_eq!(body["conversation"]["workspaceId"], Value::Null, "{body}");
+    let (status, _, _) = server
+        .request(
+            "GET",
+            "/api/files/text?path=/site/plan.md",
+            None,
+            alice.headers(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "the folder is untouched");
 }
 
 #[tokio::test]

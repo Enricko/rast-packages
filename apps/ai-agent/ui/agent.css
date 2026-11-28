@@ -4526,3 +4526,335 @@ button.ai-artifact-card:hover {
 .ai-chart-table > summary {
   cursor: pointer;
 }
+
+/* Workspaces: the switch above the chat list, its menu, the chip under the
+   message box and the dialog's folder browser. */
+.ai-ws-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-ws-switch:hover,
+.ai-ws-switch[aria-expanded="true"] {
+  background: var(--ai-tint-2);
+  color: var(--text);
+}
+
+.ai-ws-switch.is-on {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.ai-ws-switch.is-on .ai-ws-switch-icon {
+  color: var(--accent);
+}
+
+.ai-ws-switch-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.ai-ws-switch-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-ws-switch > .icon:last-child {
+  flex: none;
+  opacity: 0.7;
+}
+
+.ai-ws-pop {
+  width: 300px;
+  max-width: calc(100% - 16px);
+}
+
+.ai-ws-menu {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 5px;
+}
+
+.ai-ws-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.ai-ws-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.ai-ws-item {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-ws-row .ai-ws-item {
+  padding-right: 36px;
+}
+
+.ai-ws-item:hover,
+.ai-ws-item:focus-visible {
+  background: var(--ai-tint-2);
+  outline: none;
+}
+
+.ai-ws-item > .icon:first-child {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.ai-ws-item.is-picked > .icon:first-child {
+  color: var(--accent);
+}
+
+.ai-ws-item-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ai-ws-item-name,
+.ai-ws-item-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-ws-item.is-picked .ai-ws-item-name {
+  font-weight: 600;
+}
+
+.ai-ws-item-path {
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+.ai-ws-edit {
+  position: absolute;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.ai-ws-row:hover .ai-ws-edit,
+.ai-ws-edit:focus-visible {
+  opacity: 1;
+}
+
+.ai-ws-edit:hover {
+  background: var(--ai-tint);
+  color: var(--text);
+}
+
+.ai-ws-new {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 36px;
+  margin-top: 4px;
+  padding: 0 10px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-ws-new:hover {
+  background: var(--ai-tint-2);
+}
+
+.ai-ws-chip {
+  max-width: 180px;
+}
+
+.ai-ws-chip .ai-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-ws-chip.is-empty .ai-chip-label {
+  display: none;
+}
+
+.ai-ws-chip.is-on {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--ai-accent-tint);
+  color: var(--text);
+}
+
+.ai-ws-chip.is-on .icon {
+  color: var(--accent);
+}
+
+.ai-ws-form {
+  gap: 12px;
+  width: min(460px, 80vw);
+}
+
+.ai-ws-places {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--ai-tint);
+}
+
+.ai-ws-place {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ai-ws-place.is-picked {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.ai-ws-place.is-picked .icon {
+  color: var(--accent);
+}
+
+.ai-ws-path {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+}
+
+.ai-ws-browser {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.ai-ws-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--ai-tint);
+}
+
+.ai-ws-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.ai-ws-crumb:hover {
+  background: var(--ai-tint-2);
+}
+
+.ai-ws-crumb-sep {
+  color: var(--text-dim);
+}
+
+.ai-ws-folders {
+  display: flex;
+  flex-direction: column;
+  max-height: 200px;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.ai-ws-folders > p {
+  margin: 8px;
+}
+
+.ai-ws-folder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-ws-folder:hover {
+  background: var(--ai-tint-2);
+}
+
+.ai-ws-folder .icon {
+  color: var(--accent);
+}
+
+.ai-ws-hint {
+  margin: -4px 0 0;
+}

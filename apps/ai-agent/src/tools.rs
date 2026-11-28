@@ -148,6 +148,9 @@ pub struct Available {
     /// Not an administrator: the server only read-only, private places and
     /// secrets kept out (see [`guard`]).
     pub guarded: bool,
+    /// The chat's workspace: file tools stay inside it and commands start
+    /// in it (see [`super::workspace`]).
+    pub workspace: Option<super::workspace::Scope>,
 }
 
 impl Available {
@@ -164,6 +167,36 @@ impl Available {
             }
         }
         self
+    }
+
+    /// Focus on a workspace (see [`super::workspace`]).
+    pub fn in_workspace(mut self, workspace: Option<super::workspace::Scope>) -> Self {
+        self.workspace = workspace.map(|w| w.with_shell(self.shell, self.home_on_disk.as_deref()));
+        self
+    }
+
+    /// A path for a file tool: inside the workspace of the person's files.
+    fn file_path(&self, raw: &str) -> Result<String, String> {
+        match &self.workspace {
+            Some(w) if w.place == super::workspace::Place::Files => w.inside(raw),
+            _ => Ok(raw.to_string()),
+        }
+    }
+
+    /// A path for a server tool: relative ones in a server workspace.
+    fn server_path(&self, raw: &str) -> String {
+        match &self.workspace {
+            Some(w) if w.place == super::workspace::Place::Server => w.on_server(raw),
+            _ => raw.to_string(),
+        }
+    }
+
+    /// The command, started in the workspace.
+    fn command(&self, command: &str) -> String {
+        match &self.workspace {
+            Some(w) => w.command(command),
+            None => command.to_string(),
+        }
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
@@ -502,7 +535,7 @@ async fn run_tool(
 ) -> Result<String, String> {
     match name {
         LIST_FILES => {
-            let path = text_arg(input, "path")?;
+            let path = &available.file_path(text_arg(input, "path")?)?;
             let listing = state.host.files_list(user, path).await?;
             if listing.items.is_empty() {
                 return Ok(format!("{} is empty.", listing.path));
@@ -537,7 +570,7 @@ async fn run_tool(
             Ok(lines.join("\n"))
         }
         READ_FILE => {
-            let path = text_arg(input, "path")?;
+            let path = &available.file_path(text_arg(input, "path")?)?;
             let preview = state.host.files_read(user, path, READ_BYTES).await?;
             if preview.encoding == "binary" {
                 return Err(format!("{path} is not a text file"));
@@ -550,8 +583,12 @@ async fn run_tool(
         }
         SEARCH_FILES => {
             let query = text_arg(input, "query")?;
-            let path = input.get("path").and_then(Value::as_str).unwrap_or("/");
-            let found = state.host.files_search(user, path, query).await?;
+            let path = match input.get("path").and_then(Value::as_str) {
+                Some(path) => available.file_path(path)?,
+                None if available.workspace.is_some() => available.file_path("")?,
+                None => "/".to_string(),
+            };
+            let found = state.host.files_search(user, &path, query).await?;
             if found.items.is_empty() {
                 return Ok("Nothing found.".into());
             }
@@ -568,7 +605,7 @@ async fn run_tool(
             Ok(lines.join("\n"))
         }
         WRITE_FILE => {
-            let path = text_arg(input, "path")?;
+            let path = &available.file_path(text_arg(input, "path")?)?;
             let content = text_arg(input, "content")?;
             if content.len() > MAX_WRITE_BYTES {
                 return Err(format!(
@@ -586,12 +623,12 @@ async fn run_tool(
             ))
         }
         CREATE_FOLDER => {
-            let path = text_arg(input, "path")?;
+            let path = &available.file_path(text_arg(input, "path")?)?;
             let entry = state.host.files_mkdir(user, path).await?;
             Ok(format!("Created the folder {}.", entry.path))
         }
         LIST_SERVER_FILES | READ_SERVER_FILE => {
-            let path = text_arg(input, "path")?.to_string();
+            let path = available.server_path(text_arg(input, "path")?);
             let hidden = guard::hidden_paths(state.host.private_paths());
             let guarded = available.guarded;
             let listing = name == LIST_SERVER_FILES;
@@ -625,9 +662,11 @@ async fn run_tool(
             } else {
                 secs
             };
+            let started_in = available.command(command);
             let result = match available.shell {
-                Some(Shell::Root) => state.host.terminal_run(user, command, secs).await,
-                Some(Shell::Sandbox) => match state.host.sandbox_run(user, command, secs).await {
+                Some(Shell::Root) => state.host.terminal_run(user, &started_in, secs).await,
+                Some(Shell::Sandbox) => match state.host.sandbox_run(user, &started_in, secs).await
+                {
                     Err(TerminalError::Refused { code, message })
                         if code == "home" || code == "forbidden" =>
                     {

@@ -45,6 +45,7 @@ pub mod run;
 pub mod signin;
 pub mod tools;
 pub mod view;
+pub mod workspace;
 
 use std::collections::HashMap;
 
@@ -1563,6 +1564,8 @@ pub struct Conversation {
     pub waiting: bool,
     /// When its owner pinned it to the top of the list.
     pub pinned_at: Option<i64>,
+    /// The workspace it focuses on (see [`workspace`]).
+    pub workspace_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -1579,6 +1582,7 @@ impl Conversation {
             "allowedTools": self.allowed_tools,
             "effort": self.effort.map_or("", Effort::as_str),
             "pinnedAt": self.pinned_at,
+            "workspaceId": self.workspace_id,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
             "running": running,
@@ -1609,6 +1613,10 @@ pub fn conversation_from_row(row: &sqlx::sqlite::SqliteRow) -> Conversation {
             .as_deref()
             == Some("waiting"),
         pinned_at: row.get("pinned_at"),
+        workspace_id: row
+            .try_get::<Option<String>, _>("workspace_id")
+            .ok()
+            .flatten(),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
