@@ -11,6 +11,14 @@ export interface Release {
 
 export const WHATS_NEW: Release[] = [
   {
+    version: "1.10.0",
+    date: "2026-11-28",
+    items: [
+      "Work in apps keeps going after you close RAST: AI Agent runs the app in a hidden window on the server, opens your file, keeps your settings and fonts, and saves back to your files. Open on a card opens the file as last saved.",
+      "Every app works on the server, with or without commands: WordCraft and the other Craft apps, Code Editor, File Station and apps installed later (Terminal stays on the command tool). Apps without RAST files still get your file in their Open picker and save downloads into your files.",
+    ],
+  },
+  {
     version: "1.9.0",
     date: "2026-11-28",
     items: [

@@ -1,6 +1,6 @@
 [package]
 name = "rast-ai-agent"
-version = "1.9.0"
+version = "1.10.0"
 edition = "2021"
 rust-version = "1.94"
 description = "AI Agent: RAST's agent harness, an App Center app package"

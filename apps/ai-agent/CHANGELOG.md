@@ -7,6 +7,8 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-28
+
 ### Added
 
 - **The agent's work in apps goes on when the person closes RAST.**
