@@ -151,6 +151,20 @@ type Key = (String, String);
 
 /// Control methods the window answers itself, for every app.
 const WINDOW_ONLY: [&str; 4] = ["ui.scroll", "ui.drag", "ui.move", "app.open"];
+/// An app's answer to a method it does not have.
+fn unknown_method(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    [
+        "unknown method",
+        "unknown request",
+        "no such method",
+        "not supported",
+        "unsupported method",
+    ]
+    .iter()
+    .any(|said| error.contains(said))
+}
+
 /// Control methods the window answers for an app with no command API.
 const BY_HAND: [&str; 5] = [
     "ui.screenshot",
@@ -427,7 +441,10 @@ impl Window {
         if WINDOW_ONLY.contains(&method) {
             return self.by_hand(method, params).await;
         }
-        if !self.offers().await.commands {
+        let commands = self.offers().await.commands;
+        // RAST's own windows answer requests of their app, not the
+        // window's: the window works them by hand.
+        if !commands || (self.is_desktop() && BY_HAND.contains(&method)) {
             if BY_HAND.contains(&method) {
                 return self.by_hand(method, params).await;
             }
@@ -436,7 +453,14 @@ impl Window {
                 self.app.name
             ));
         }
-        self.app_request(method, params).await
+        match self.app_request(method, params).await {
+            // A web page app answers its own commands; the window does
+            // what it leaves (Craft apps answer ui.* themselves).
+            Err(error) if BY_HAND.contains(&method) && unknown_method(&error) => {
+                self.by_hand(method, params).await
+            }
+            answer => answer,
+        }
     }
 
     /// One method of the app's page command API (its window's request
@@ -1658,6 +1682,13 @@ pub fn document(conversation: &str, app_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_works_by_hand_what_an_app_leaves() {
+        assert!(unknown_method("Error: unknown method ui.screenshot"));
+        assert!(unknown_method("Notes: Unsupported method ui.click"));
+        assert!(!unknown_method("ui.click: x is outside the canvas"));
+    }
 
     #[test]
     fn names_the_app_gives_are_cleaned() {
