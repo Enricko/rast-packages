@@ -177,7 +177,8 @@ export function createAttachments(ctx: AppContext, onChange: () => void): Attach
 }
 
 /** A sent message's files: pictures for images, chips for the rest.
- * Pictures and PDFs open in the viewer beside the chat (`data-view-file`). */
+ * Pictures, PDFs and text files open in the panel beside the chat
+ * (`data-view-file`). */
 export function sentFiles(files: FileBlock[]): HTMLElement | null {
   if (!files.length) return null;
   const view = (file: FileBlock) => ({ viewFile: file.id, viewName: file.name, viewKind: file.kind });
@@ -197,8 +198,8 @@ export function sentFiles(files: FileBlock[]): HTMLElement | null {
               class: "ai-file",
               href: fileUrl(file.id),
               download: file.name,
-              title: file.kind === "pdf" ? `Open ${file.name}` : `Download ${file.name}`,
-              dataset: file.kind === "pdf" ? view(file) : {},
+              title: file.kind === "pdf" || file.kind === "text" ? `Open ${file.name}` : `Download ${file.name}`,
+              dataset: file.kind === "pdf" || file.kind === "text" ? view(file) : {},
             },
             h("span", { class: "ai-attachment-icon" }, iconSvg("file", 16)),
             h(

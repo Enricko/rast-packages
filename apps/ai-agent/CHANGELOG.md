@@ -7,6 +7,29 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+### Added
+
+- **The panel beside the chat has tabs.** Artifacts, files and web pages a
+  chat names each open in a tab (as in a browser): a type badge (PDF, W,
+  XLS, PPT, MD, CSV, …) or the site's icon, × to close, **+** to open a path
+  or address, **Fill** and **Hide**. A path bar shows where it is, its kind,
+  Preview/Source and Reload, Copy, Download, Open in a new tab and Show in
+  File Station. Tabs keep their view while open, and each chat keeps its
+  tabs (with the window, and while another chat is in front).
+- **Documents as pages.** Word, Excel, PowerPoint, OpenDocument and RTF files
+  show as pages: LibreOffice on the server turns them into PDFs, in a locked
+  systemd unit (no network, no files of the server), kept a week per account.
+  `POST /api/ai/view/convert`, `GET /api/ai/view/converted/{id}`.
+- **Every other file.** Markdown rendered, CSV/TSV as a table, JSON
+  formatted, HTML as a walled-off page (`GET /api/ai/view/html`), text and
+  code with line numbers; other files offer Download and File Station.
+  Text and documents on the web come through `GET /api/ai/view?as=text|document`.
+- **Web pages.** A link opens in a tab: in a sandboxed frame where the site
+  allows one (with RAST 0.9.19), else as a card with its picture, title,
+  description and Open in a new tab (`GET /api/ai/view/page`).
+- **File cards.** Each file a reply wrote gets a card under it: its type,
+  name and folder, Open, and Download / Show in File Station.
+
 ## [1.4.0] - 2026-11-28
 
 ### Added

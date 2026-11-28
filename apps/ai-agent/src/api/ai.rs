@@ -47,6 +47,10 @@ pub fn routes() -> Router<Agent> {
         .route("/api/ai/files", post(upload_file))
         .route("/api/ai/files/{id}", get(get_file).delete(delete_file))
         .route("/api/ai/view", get(view_url))
+        .route("/api/ai/view/page", get(view_page))
+        .route("/api/ai/view/html", get(view_html))
+        .route("/api/ai/view/convert", post(convert_document))
+        .route("/api/ai/view/converted/{id}", get(converted_document))
         .route("/api/ai/conversations/{id}/stop", post(stop_reply))
         .route("/api/ai/conversations/{id}/retry", post(retry_now))
         .route(
@@ -915,6 +919,9 @@ async fn get_file(
 #[serde(deny_unknown_fields)]
 struct ViewQuery {
     url: String,
+    /// `media` (default), `text` or `document`.
+    #[serde(rename = "as")]
+    wanted: Option<String>,
 }
 
 /// The policy of what the viewer opens: no scripts and nothing else loaded,
@@ -933,14 +940,16 @@ async fn view_url(
     if query.url.len() > 4096 {
         return Err(AppError::bad_request("the address is too long"));
     }
+    let wanted = ai::view::Wanted::parse(query.wanted.as_deref()).map_err(AppError::bad_request)?;
     let range = request_headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let media = tokio::task::spawn_blocking(move || ai::view::open(&query.url, range.as_deref()))
-        .await
-        .map_err(|e| AppError::internal(format!("the viewer stopped: {e}")))?
-        .map_err(AppError::bad_request)?;
+    let media =
+        tokio::task::spawn_blocking(move || ai::view::open(&query.url, range.as_deref(), wanted))
+            .await
+            .map_err(|e| AppError::internal(format!("the viewer stopped: {e}")))?
+            .map_err(AppError::bad_request)?;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(4);
     let mut body = media.body;
     tokio::task::spawn_blocking(move || {
@@ -979,7 +988,14 @@ async fn view_url(
             h.insert(name, value);
         }
     };
-    set(header::CONTENT_TYPE, &media.content_type);
+    // Text shows as text, whatever the site called it; a document is bytes
+    // for the converter.
+    let (content_type, disposition) = match wanted {
+        ai::view::Wanted::Media => (media.content_type.as_str(), "inline"),
+        ai::view::Wanted::Text => ("text/plain; charset=utf-8", "inline"),
+        ai::view::Wanted::Document => ("application/octet-stream", "attachment"),
+    };
+    set(header::CONTENT_TYPE, content_type);
     if let Some(length) = media.length {
         set(header::CONTENT_LENGTH, &length.to_string());
     }
@@ -990,10 +1006,156 @@ async fn view_url(
         set(header::ACCEPT_RANGES, "bytes");
     }
     set(header::CACHE_CONTROL, "private, max-age=300");
-    set(header::CONTENT_DISPOSITION, "inline");
+    set(header::CONTENT_DISPOSITION, disposition);
     set(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
     set(header::REFERRER_POLICY, "no-referrer");
     set(header::CONTENT_SECURITY_POLICY, VIEW_CSP);
+    Ok(response)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PageQuery {
+    url: String,
+}
+
+/// GET /api/ai/view/page?url= — what a web page is, for its tab: title,
+/// description, picture, icon, and whether the site lets it be framed.
+async fn view_page(_user: AuthUser, Query(query): Query<PageQuery>) -> AppResult<Json<Value>> {
+    if query.url.len() > 4096 {
+        return Err(AppError::bad_request("the address is too long"));
+    }
+    let info = tokio::task::spawn_blocking(move || ai::view::page_info(&query.url))
+        .await
+        .map_err(|e| AppError::internal(format!("the viewer stopped: {e}")))?
+        .map_err(AppError::bad_request)?;
+    Ok(Json(serde_json::to_value(info).unwrap_or(Value::Null)))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PathQuery {
+    path: String,
+}
+
+/// The most of an HTML file shown as a page.
+const HTML_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
+
+/// GET /api/ai/view/html?path= — an HTML file in the person's files, with
+/// their own access, as a page under the artifacts' policy (scripts run in
+/// an opaque origin: no session, no RAST API, no network but a few CDNs).
+async fn view_html(
+    State(state): State<Agent>,
+    user: AuthUser,
+    Query(query): Query<PathQuery>,
+) -> AppResult<Response> {
+    let lower = query.path.to_ascii_lowercase();
+    if !(lower.ends_with(".html") || lower.ends_with(".htm")) {
+        return Err(AppError::bad_request("only .html files show as pages"));
+    }
+    let preview = state
+        .host
+        .files_read(&user, &query.path, HTML_PREVIEW_BYTES)
+        .await
+        .map_err(AppError::bad_request)?;
+    let mut response = Response::new(Body::from(preview.content));
+    let h = response.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(ARTIFACT_CSP),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-cache"),
+    );
+    h.insert(
+        header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("SAMEORIGIN"),
+    );
+    Ok(response)
+}
+
+/// POST /api/ai/view/convert?name= — a document (raw body, up to 64 MiB)
+/// turned into a PDF → `{id}` (see [`ai::convert`]).
+async fn convert_document(
+    State(state): State<Agent>,
+    user: AuthUser,
+    Query(query): Query<UploadQuery>,
+    headers: HeaderMap,
+    body: Body,
+) -> AppResult<Json<Value>> {
+    let name = query.name.unwrap_or_default();
+    let too_large = || AppError::PayloadTooLarge("documents are shown up to 64 MiB");
+    let length = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if length.is_some_and(|l| l > ai::convert::MAX_DOCUMENT_BYTES) {
+        return Err(too_large());
+    }
+    let mut data: Vec<u8> =
+        Vec::with_capacity(length.unwrap_or(0).min(ai::convert::MAX_DOCUMENT_BYTES) as usize);
+    let mut stream = body.into_data_stream();
+    while let Some(frame) = stream.next().await {
+        let bytes =
+            frame.map_err(|e| AppError::bad_request(format!("upload stream failed: {e}")))?;
+        if data.len() as u64 + bytes.len() as u64 > ai::convert::MAX_DOCUMENT_BYTES {
+            return Err(too_large());
+        }
+        data.extend_from_slice(&bytes);
+    }
+    let id = ai::convert::to_pdf(&state, &user, &name, data)
+        .await
+        .map_err(AppError::bad_request)?;
+    Ok(Json(json!({ "id": id })))
+}
+
+/// GET /api/ai/view/converted/{id} — a converted document's pages, for the
+/// account that converted it.
+async fn converted_document(
+    State(state): State<Agent>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> AppResult<Response> {
+    let path = ai::convert::converted_path(state.data_dir(), user.id, &id)
+        .ok_or(AppError::NotFound("document not found"))?;
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| AppError::NotFound("document not found"))?;
+    let mut response = Response::new(Body::from(bytes));
+    let h = response.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/pdf"),
+    );
+    h.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("inline"),
+    );
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(VIEW_CSP),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
     Ok(response)
 }
 

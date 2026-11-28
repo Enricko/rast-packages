@@ -14,10 +14,11 @@ import { appIconSvg, iconSvg } from "../../core/icons";
 import { debounceTask, getRealtime } from "../../core/realtime";
 import { confirmDialog, contextMenu, copyText, dialogOpen, errorMessage, promptDialog } from "../../core/ui";
 import { agentAvatar, providerMark } from "./marks";
-import { artifactCard, createArtifactPane } from "./artifact";
+import { artifactCard, artifactKey, createArtifactView, type ArtifactView } from "./artifact";
 import { createAttachments, picture, sentFiles } from "./attachments";
-import { viewKindOf, viewOfChatFile, viewOfPath, viewOfUrl, type ViewTarget } from "./view";
-import { createViewerPane } from "./viewer";
+import { createSidePanel, type TabSpec } from "./panel";
+import { badgeOf, folderOf, isWebUrl, kindLabel, looksLikePath, viewOfChatFile, viewOfLink, viewOfPath, viewOfUrl, type ViewTarget } from "./view";
+import { createFileView } from "./viewer";
 import { formatEstimate } from "./usage";
 import { renderMarkdown } from "./markdown";
 import { showWhatsNew, updateBanner } from "./update";
@@ -74,8 +75,30 @@ export const agentApp: AppDefinition = {
 interface Params {
   conversationId?: string;
   settings?: boolean;
-  /** The artifact version open beside the chat. */
+  /** The artifact version open beside the chat (before tabs). */
   artifact?: string;
+  /** The panel's tabs, the one in front and whether it is hidden. */
+  tabs?: SavedTab[];
+  active?: number;
+  hidden?: boolean;
+}
+
+/** A tab of the panel, as the window keeps it: an artifact (`a`), a path
+ * in the person's files (`p`), a web address (`u`) or a file sent in the
+ * chat (`f`, with its name and kind). */
+type SavedTab = { a: string } | { p: string } | { u: string } | { f: string; n: string; k: string };
+
+const MAX_SAVED_TABS = 12;
+
+function savedTab(value: unknown): SavedTab | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const text = (v: unknown, max = 4096) => (typeof v === "string" && v.length > 0 && v.length <= max ? v : null);
+  if (text(raw.a, 200)) return { a: raw.a as string };
+  if (text(raw.p)) return { p: raw.p as string };
+  if (text(raw.u)) return { u: raw.u as string };
+  if (text(raw.f, 200) && text(raw.n, 500) && text(raw.k, 20)) return { f: raw.f as string, n: raw.n as string, k: raw.k as string };
+  return null;
 }
 
 const CHOICE_KEY = "rast.agent.choice";
@@ -129,6 +152,16 @@ function asParams(value: unknown): Params {
     ...(typeof raw.conversationId === "string" ? { conversationId: raw.conversationId } : {}),
     ...(raw.settings === true ? { settings: true } : {}),
     ...(typeof raw.artifact === "string" ? { artifact: raw.artifact } : {}),
+    ...(Array.isArray(raw.tabs)
+      ? {
+          tabs: raw.tabs
+            .slice(0, MAX_SAVED_TABS)
+            .map(savedTab)
+            .filter((t): t is SavedTab => t !== null),
+        }
+      : {}),
+    ...(typeof raw.active === "number" && Number.isInteger(raw.active) ? { active: raw.active } : {}),
+    ...(raw.hidden === true ? { hidden: true } : {}),
   };
 }
 
@@ -207,12 +240,20 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     { class: "btn btn-ghost btn-icon btn-sm ai-side-toggle", type: "button", title: "Chats", ariaLabel: "Show chats" },
     iconSvg("menu", 16),
   );
+  // Brings back a hidden panel and its tabs.
+  const panelButton = h(
+    "button",
+    { class: "btn btn-ghost btn-sm ai-panel-show hidden", type: "button", title: "Show the panel", ariaLabel: "Show the panel" },
+    iconSvg("layers", 15),
+    h("span", { class: "ai-panel-count" }),
+  );
   const head = h(
     "header",
     { class: "ai-head" },
     sideToggle,
     headAvatar,
     h("div", { class: "ai-head-text" }, titleEl, h("span", { class: "ai-head-sub" }, subEl, ownerEl)),
+    panelButton,
     menuButton,
   );
   const thread = h("div", { class: "ai-thread" });
@@ -276,46 +317,133 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   const main = h("section", { class: "ai-main" }, head, scrollArea, composer, dropHint);
   const settingsHost = h("section", { class: "ai-settings hidden" });
   const scrim = h("div", { class: "ai-scrim" });
-  const artifactPane = createArtifactPane(ctx, () => closeArtifact(true));
-  const viewerPane = createViewerPane(ctx, () => closeView());
-  ctx.root.append(side, main, artifactPane.el, viewerPane.el, settingsHost, scrim);
+  // The panel beside the chat: tabs of artifacts, files and web pages
+  // (panel.ts). Each chat keeps its own tabs (with the window, and while
+  // this window is open when another chat is in front).
+  let restoring = false;
+  const panel = createSidePanel(ctx, {
+    onAdd: (text) => {
+      const target = isWebUrl(text) ? viewOfUrl(text) : looksLikePath(text) ? viewOfPath(text) : /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(text) ? viewOfUrl(`https://${text}`) : null;
+      if (!target) return false;
+      openView(target);
+      return true;
+    },
+    onChange: () => {
+      syncPanel();
+      if (!restoring) saveWindow();
+    },
+  });
+  ctx.root.append(side, main, panel.el, settingsHost, scrim);
+  const tabMemory = new Map<string, Params>();
 
-  // The viewer: a picture, video or PDF from the chat, in the artifact
-  // panel's place.
+  panelButton.addEventListener("click", () => panel.setHidden(false));
+
+  /** The panel shows beside the chat (not over Settings). */
+  function syncPanel(): void {
+    const shown = panel.isOpen() && settingsHost.classList.contains("hidden");
+    const was = ctx.root.classList.contains("has-artifact");
+    ctx.root.classList.toggle("has-artifact", shown);
+    if (shown && !was) ctx.root.classList.remove("ai-side-open");
+    const tabs = panel.views().length;
+    panelButton.classList.toggle("hidden", !tabs || panel.isOpen());
+    panelButton.querySelector(".ai-panel-count")!.textContent = String(tabs);
+    panelButton.title = tabs === 1 ? "Show the panel (1 tab)" : `Show the panel (${tabs} tabs)`;
+  }
+
+  function tabsState(): Pick<Params, "tabs" | "active" | "hidden"> {
+    const views = panel.views();
+    const tabs: SavedTab[] = [];
+    let active = 0;
+    for (const view of views) {
+      const saved = toSaved(view.spec());
+      if (!saved) continue;
+      if (view === panel.active()) active = tabs.length;
+      tabs.push(saved);
+    }
+    if (!tabs.length) return {};
+    return { tabs: tabs.slice(-MAX_SAVED_TABS), active: Math.min(active, MAX_SAVED_TABS - 1), ...(panel.hidden() ? { hidden: true } : {}) };
+  }
+
+  function toSaved(spec: TabSpec): SavedTab | null {
+    if (spec.t === "artifact") return { a: spec.callId };
+    const target = spec.target;
+    if (target.path) return { p: target.path };
+    if (target.file) return { f: target.file, n: target.title, k: target.kind === "image" || target.kind === "pdf" ? target.kind : "text" };
+    if (target.external) return { u: target.external };
+    return null;
+  }
+
+  /** Remembers the chat and its tabs with the window. */
+  function saveWindow(): void {
+    if (!current || current.readOnly) return;
+    ctx.saveState({ conversationId: current.conversation.id, ...tabsState() });
+  }
+
+  /** Put the panel away (its tabs are kept for the chat). */
+  function stowPanel(): void {
+    if (current && panel.views().length) tabMemory.set(current.conversation.id, tabsState());
+    panel.closeAll();
+    syncPanel();
+  }
+
+  /** Open a chat's tabs (what the window kept, or an artifact's). */
+  function restoreTabs(state: Params): void {
+    const wanted = state.tabs ?? (state.artifact ? [{ a: state.artifact }] : []);
+    // The same tabs (another device saying what this one did): as they are.
+    if (!state.artifact) {
+      const asked = wanted.length ? { tabs: wanted, active: state.active ?? 0, ...(state.hidden ? { hidden: true } : {}) } : {};
+      if (JSON.stringify(asked) === JSON.stringify(tabsState())) return;
+    }
+    restoring = true;
+    try {
+      panel.closeAll();
+      for (const saved of wanted) {
+        if ("a" in saved) openArtifact(saved.a, { background: true });
+        else {
+          const target =
+            "p" in saved
+              ? viewOfPath(saved.p)
+              : "u" in saved
+                ? viewOfUrl(saved.u)
+                : viewOfChatFile({ id: saved.f, name: saved.n, kind: (saved.k === "image" || saved.k === "pdf" ? saved.k : "text") as "image" | "pdf" | "text" });
+          if (target) panel.open(createFileView(ctx, target), { background: true });
+        }
+      }
+      const views = panel.views();
+      const front = views[Math.min(Math.max(state.active ?? 0, 0), views.length - 1)];
+      if (state.artifact) {
+        const artifact = current ? chatArtifacts(current.messages).find((a) => a.callId === state.artifact) : undefined;
+        if (artifact) panel.activate(artifactKey(artifact));
+      } else if (front) panel.activate(front.key);
+      panel.setHidden(Boolean(state.hidden));
+    } finally {
+      restoring = false;
+    }
+    syncPanel();
+  }
+
+  /** A file, picture, document or web page in a tab of the panel. */
   function openView(target: ViewTarget): void {
-    if (artifactPane.shown()) artifactPane.close();
-    viewerPane.show(target);
-    ctx.root.classList.add("has-artifact", "is-viewing");
-    ctx.root.classList.remove("ai-side-open");
-  }
-  function closeView(): void {
-    if (!viewerPane.shown()) return;
-    viewerPane.close();
-    ctx.root.classList.remove("is-viewing");
-    if (!artifactPane.shown()) ctx.root.classList.remove("has-artifact");
+    panel.open(createFileView(ctx, target));
   }
 
-  // Artifacts: a panel beside the chat. A new one opens by itself while the
-  // chat is in view; those already there when a chat opens wait for a click.
+  // Artifacts: a tab of the panel (its versions share it). A new one opens
+  // by itself while the chat is in view; those already there when a chat
+  // opens wait for a click.
   let seenArtifacts = new Set<string>();
-  function openArtifact(callId: string): void {
+  function openArtifact(callId: string, options: { background?: boolean } = {}): void {
     if (!current) return;
     const list = chatArtifacts(current.messages);
-    if (!list.some((a) => a.callId === callId)) return;
-    if (viewerPane.shown()) {
-      viewerPane.close();
-      ctx.root.classList.remove("is-viewing");
+    const artifact = list.find((a) => a.callId === callId);
+    if (!artifact) return;
+    const existing = panel.get(artifactKey(artifact)) as ArtifactView | undefined;
+    if (existing) {
+      existing.update(list, callId);
+      if (!options.background) panel.activate(existing.key);
+      return;
     }
-    artifactPane.show(list, callId, current.conversation.id);
-    ctx.root.classList.add("has-artifact");
-    ctx.root.classList.remove("ai-side-open");
-    if (!current.readOnly) ctx.saveState({ conversationId: current.conversation.id, artifact: callId });
-  }
-  function closeArtifact(save: boolean): void {
-    if (!artifactPane.shown()) return;
-    artifactPane.close();
-    ctx.root.classList.remove("has-artifact");
-    if (save && current && !current.readOnly) ctx.saveState({ conversationId: current.conversation.id });
+    const view = createArtifactView(ctx, list, callId, current.conversation.id);
+    if (view) panel.open(view, options);
   }
   function noticeArtifacts(): void {
     if (!current) return;
@@ -326,8 +454,8 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       seenArtifacts.add(artifact.callId);
       fresh = artifact.callId;
     }
+    for (const view of panel.views()) if (view.key.startsWith("a:")) (view as ArtifactView).update(list);
     if (fresh) openArtifact(fresh);
-    else if (artifactPane.shown()) artifactPane.update(list);
   }
 
   // The chat list: a column that hides in a wide window, a drawer in a
@@ -509,24 +637,22 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     renderList();
   }
 
-  async function openConversation(id: string, options_: { quiet?: boolean; artifact?: string } = {}): Promise<void> {
+  async function openConversation(id: string, options_: { quiet?: boolean; place?: Params } = {}): Promise<void> {
     closeSettings();
     const token = ++loadToken;
     try {
       const detail = await ctx.api.get<ConversationDetail>(`/api/ai/conversations/${encodeURIComponent(id)}`);
       if (token !== loadToken || disposed) return;
       const switching = current?.conversation.id !== id;
+      if (switching) stowPanel();
       current = detail;
-      if (switching) {
-        seenArtifacts = new Set(chatArtifacts(detail.messages).map((a) => a.callId));
-        closeArtifact(false);
-        closeView();
-      }
-      const keep = options_.artifact ?? (switching ? undefined : (artifactPane.shown() ?? undefined));
-      if (!detail.readOnly) ctx.saveState(keep ? { conversationId: id, artifact: keep } : { conversationId: id });
+      if (switching) seenArtifacts = new Set(chatArtifacts(detail.messages).map((a) => a.callId));
       renderAll(switching);
-      if (options_.artifact) openArtifact(options_.artifact);
-      else if (!switching) noticeArtifacts();
+      const place = options_.place;
+      if (place && (place.tabs || place.artifact)) restoreTabs(place);
+      else if (switching) restoreTabs(tabMemory.get(id) ?? {});
+      else noticeArtifacts();
+      saveWindow();
       if (switching && !detail.readOnly) input.focus();
     } catch (error) {
       if (token !== loadToken) return;
@@ -541,8 +667,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
 
   function openNew(): void {
     closeSettings();
-    closeArtifact(false);
-    closeView();
+    stowPanel();
     seenArtifacts = new Set();
     loadToken += 1;
     current = null;
@@ -555,11 +680,10 @@ function mountAgentApp(ctx: AppContext): AppInstance {
 
   function openSettings(): void {
     if (!isAdmin) return;
-    closeArtifact(false);
-    closeView();
     ctx.saveState({ settings: true });
     main.classList.add("hidden");
     settingsHost.classList.remove("hidden");
+    syncPanel();
     ctx.root.classList.remove("ai-side-open");
     if (!settings) {
       settings = mountSettings({
@@ -567,7 +691,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         host: settingsHost,
         onClose: () => {
           closeSettings();
-          if (current) ctx.saveState({ conversationId: current.conversation.id });
+          if (current) saveWindow();
           else ctx.saveState({});
         },
         openConversation: (id) => void openConversation(id),
@@ -582,6 +706,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     if (settingsHost.classList.contains("hidden")) return;
     settingsHost.classList.add("hidden");
     main.classList.remove("hidden");
+    syncPanel();
     updateTitle();
   }
 
@@ -611,7 +736,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         id = created.conversation.id;
         conversations = [created.conversation, ...conversations.filter((c) => c.id !== id)];
         current = { conversation: created.conversation, messages: [], seq: 0, readOnly: false };
-        ctx.saveState({ conversationId: id });
+        saveWindow();
       }
       const sent = await ctx.api.post<{ conversation: Conversation; message: Message; reply: Message }>(
         `/api/ai/conversations/${encodeURIComponent(id)}/messages`,
@@ -1224,13 +1349,16 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       } else if (block.type === "tool" && block.name === "artifact") {
         parts.push(
           reuse(index, sig, () =>
-            artifactCard(block, current ? (chatArtifacts(current.messages).find((a) => a.callId === block.id) ?? null) : null, openArtifact),
+            artifactCard(block, current ? (chatArtifacts(current.messages).find((a) => a.callId === block.id) ?? null) : null, (callId) => openArtifact(callId)),
           ),
         );
       } else if (block.type === "tool") {
         parts.push(reuse(index, sig, () => toolCard(message, block, opened)));
       }
     });
+    // The files it wrote: a card each, to open beside the chat.
+    const written = writtenFiles(message);
+    if (written.length) parts.push(reuse(-4, `files|${written.join("\n")}`, () => fileCards(written)));
     // Waiting to try again: the try, a countdown and what failed.
     const retry = streaming ? message.retry : null;
     if (retry) {
@@ -1408,11 +1536,79 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     );
   }
 
-  /** A file tool's picture, video or PDF in the person's files, once there. */
+  /** The paths a reply's write_file calls wrote, in order, once each. */
+  function writtenFiles(message: Message): string[] {
+    const paths = new Set<string>();
+    for (const block of message.content) {
+      if (block.type !== "tool" || block.name !== "write_file" || block.status !== "done") continue;
+      const path = (block.input as { path?: unknown } | null)?.path;
+      if (typeof path === "string" && viewOfPath(path)) paths.add(path);
+    }
+    return [...paths];
+  }
+
+  /** A card per written file: its type, name and folder; Open shows it in
+   * the panel, the arrow offers a download and File Station. */
+  function fileCards(paths: string[]): HTMLElement {
+    return h(
+      "div",
+      { class: "ai-file-cards" },
+      ...paths.map((path) => {
+        const target = viewOfPath(path)!;
+        const badge = badgeOf(target);
+        const more = h(
+          "button",
+          { class: "btn btn-ghost btn-icon btn-sm ai-file-card-more", type: "button", title: "More", ariaLabel: `More for ${target.title}` },
+          iconSvg("chevronDown", 14),
+        );
+        more.addEventListener("click", () =>
+          contextMenu(
+            0,
+            0,
+            [
+              { label: "Open beside the chat", icon: "eye", onClick: () => openView(target) },
+              {
+                label: "Download",
+                icon: "download",
+                onClick: () => {
+                  const link = h("a", { href: target.download ?? target.src, download: target.title });
+                  document.body.appendChild(link);
+                  link.click();
+                  link.remove();
+                },
+              },
+              { label: "Show in File Station", icon: "folder", onClick: () => ctx.openApp("files", { path: folderOf(path) }) },
+            ],
+            { anchor: more, ariaLabel: target.title },
+          ),
+        );
+        return h(
+          "div",
+          { class: "ai-file-card" },
+          h(
+            "button",
+            { class: "ai-file-card-main", type: "button", title: `Open ${path}`, dataset: { viewPath: path } },
+            badge.icon
+              ? h("span", { class: `ai-badge is-big is-${badge.tone}`, ariaHidden: true }, iconSvg(badge.icon, 15))
+              : h("span", { class: `ai-badge is-big is-${badge.tone}`, ariaHidden: true }, badge.text),
+            h(
+              "span",
+              { class: "ai-file-card-text" },
+              h("span", { class: "ai-file-card-name" }, target.title),
+              h("span", { class: "ai-file-card-sub small muted" }, `${kindLabel(target)} · ${folderOf(path)}`),
+            ),
+          ),
+          h("div", { class: "ai-file-card-actions" }, h("button", { class: "btn btn-sm", type: "button", dataset: { viewPath: path } }, "Open"), more),
+        );
+      }),
+    );
+  }
+
+  /** A file a file tool read or wrote in the person's files, once there. */
   function viewable(block: ToolBlock): boolean {
     if (block.status !== "done" || (block.name !== "read_file" && block.name !== "write_file")) return false;
     const path = (block.input as { path?: unknown } | null)?.path;
-    return typeof path === "string" && viewKindOf(path) !== null && viewOfPath(path) !== null;
+    return typeof path === "string" && viewOfPath(path) !== null;
   }
 
   function elapsedSince(since: number): HTMLElement {
@@ -1503,7 +1699,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     if (!el || !thread.contains(el)) return;
     const data = el.dataset;
     const target = data.viewUrl
-      ? viewOfUrl(data.viewUrl)
+      ? viewOfLink(data.viewUrl)
       : data.viewPath
         ? viewOfPath(data.viewPath)
         : viewOfChatFile({ id: data.viewFile ?? "", name: data.viewName ?? "", kind: (data.viewKind ?? "text") as "image" | "pdf" | "text" });
@@ -1576,13 +1772,13 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   ctx.onPlace((value) => {
     const params = asParams(value);
     if (params.settings) openSettings();
-    else if (params.conversationId) void openConversation(params.conversationId, { quiet: true, artifact: params.artifact });
+    else if (params.conversationId) void openConversation(params.conversationId, { quiet: true, place: params });
     else openNew();
   });
   ctx.onReopen((value) => {
     const params = asParams(value);
     if (params.settings) openSettings();
-    else if (params.conversationId) void openConversation(params.conversationId, { artifact: params.artifact });
+    else if (params.conversationId) void openConversation(params.conversationId, { place: params });
   });
   // Typing while the window is in front writes in the message box, as in
   // chat apps: the first key moves the cursor there and the rest follows.
@@ -1636,7 +1832,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     const loaded = options as Options | null;
     showWhatsNew(ctx, loaded?.version, loaded?.whatsNewSeen);
     if (start.settings && isAdmin) openSettings();
-    else if (start.conversationId) await openConversation(start.conversationId, { quiet: true, artifact: start.artifact });
+    else if (start.conversationId) await openConversation(start.conversationId, { quiet: true, place: start });
     else renderThread();
   })();
   return {};

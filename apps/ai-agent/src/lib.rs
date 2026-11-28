@@ -34,6 +34,7 @@ pub mod accounts;
 pub mod api;
 pub mod app;
 pub mod browser;
+pub mod convert;
 pub mod files;
 pub mod guard;
 pub mod host;
@@ -1977,8 +1978,9 @@ pub fn system_prompt(
             prompt.push_str(
                 "\n\nTheir RAST files: '/' is their home folder; shared folders they can open are under \
                  '/shared/<name>'. When you mention one of their files, write its path (`/reports/q3.pdf`) \
-                 or link it ([the Q3 report](/reports/q3.pdf)): pictures, videos and PDFs then open \
-                 beside the chat.",
+                 or link it ([the Q3 report](/reports/q3.pdf)): it then opens in a tab beside the chat \
+                 (pictures, videos, PDFs, Word/Excel/PowerPoint documents as pages, Markdown, \
+                 tables, code), as do the web pages you link.",
             );
         }
         match (tools.shell, &tools.home_on_disk) {

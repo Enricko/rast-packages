@@ -1,5 +1,5 @@
 // AI Agent artifacts: what the model showed with the `artifact` tool, as a
-// card in the chat and a panel beside it. Web pages and SVG pictures show in
+// card in the chat and a tab of the panel beside it (panel.ts). Web pages and SVG pictures show in
 // a sandboxed frame the server serves (scripts run, but in an opaque origin
 // without RAST's session or network: see src/api/ai.rs `get_artifact`);
 // documents render as Markdown; code shows as text. The panel has every
@@ -12,17 +12,7 @@ import { iconSvg } from "../../core/icons";
 import { copyText } from "../../core/ui";
 import { renderMarkdown } from "./markdown";
 import { ARTIFACT_KINDS, artifactFileName, artifactMime, type ArtifactVersion, type ToolBlock } from "./model";
-
-export interface ArtifactPane {
-  el: HTMLElement;
-  /** Show `callId` (one of `list`, the chat's artifacts). */
-  show(list: ArtifactVersion[], callId: string, conversationId: string): void;
-  /** The chat's artifacts changed: keep the shown one current. */
-  update(list: ArtifactVersion[]): void;
-  close(): void;
-  /** The version shown, or null when closed. */
-  shown(): string | null;
-}
+import type { TabView } from "./panel";
 
 type Mode = "preview" | "code";
 
@@ -33,15 +23,23 @@ export function artifactUrl(conversationId: string, callId: string): string {
 /** Whether the kind shows as a page in a frame (else in the app). */
 const framed = (artifact: ArtifactVersion) => artifact.kind === "html" || artifact.kind === "svg";
 
-export function createArtifactPane(ctx: AppContext, onClose: () => void): ArtifactPane {
-  let list: ArtifactVersion[] = [];
-  let shown: ArtifactVersion | null = null;
-  let conversation = "";
+/** The tab of an artifact: its versions share it. */
+export const artifactKey = (artifact: ArtifactVersion) => `a:${artifact.key}`;
+
+export interface ArtifactView extends TabView {
+  /** The chat's artifacts changed: show `callId` (or keep the shown one current). */
+  update(list: ArtifactVersion[], callId?: string): void;
+}
+
+/** An artifact in a tab of the panel: every version of it, Preview /
+ * Code, Copy, Download and (pages) Open in a new tab. */
+export function createArtifactView(ctx: AppContext, all: ArtifactVersion[], callId: string, conversationId: string): ArtifactView | null {
+  let list = all;
+  let shown = list.find((a) => a.callId === callId) ?? null;
+  if (!shown) return null;
   let mode: Mode = "preview";
   let frameFor = "";
 
-  const title = h("div", { class: "ai-artifact-title" });
-  const sub = h("div", { class: "ai-artifact-sub small muted" });
   const button = (icon: string, label: string, onClick: () => void) =>
     h("button", { class: "btn btn-ghost btn-icon btn-sm", type: "button", title: label, ariaLabel: label, onClick }, iconSvg(icon, 15));
   const older = button("chevronLeft", "Earlier version", () => step(-1));
@@ -55,33 +53,41 @@ export function createArtifactPane(ctx: AppContext, onClose: () => void): Artifa
     { class: "btn btn-ghost btn-icon btn-sm", target: "_blank", rel: "noopener", title: "Open in a new tab", ariaLabel: "Open in a new tab" },
     iconSvg("external", 15),
   );
-  const actions = h(
-    "div",
-    { class: "ai-artifact-actions" },
-    button("copy", "Copy", () => void copy()),
-    button("download", "Download", () => download()),
-    openTab,
-    button("close", "Close", () => onClose()),
-  );
-  const head = h("header", { class: "ai-artifact-head" }, h("div", { class: "ai-artifact-titles" }, title, sub), versions, modes, actions);
   const body = h("div", { class: "ai-artifact-body" });
-  const el = h("aside", { class: "ai-artifact", ariaLabel: "Artifact" }, head, body);
-  el.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && shown) {
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    }
-  });
+
+  const view: ArtifactView = {
+    key: artifactKey(shown),
+    title: shown.title,
+    badge: { text: "", tone: "violet", icon: ARTIFACT_KINDS[shown.kind].icon },
+    where: shown.title,
+    label: "",
+    tools: h("div", { class: "ai-panel-tools-row" }, versions, modes),
+    actions: [button("copy", "Copy", () => void copy()), button("download", "Download", () => download()), openTab],
+    body,
+    spec: () => ({ t: "artifact", callId: shown!.callId }),
+    refresh: () => {
+      frameFor = "";
+      render();
+    },
+    dispose: () => {
+      body.replaceChildren();
+    },
+    update(next, call) {
+      list = next;
+      const found = call ? list.find((a) => a.callId === call) : list.find((a) => a.callId === shown?.callId);
+      if (found) shown = found;
+      render();
+    },
+  };
 
   function siblings(): ArtifactVersion[] {
     return shown ? list.filter((a) => a.key === shown!.key) : [];
   }
 
   function step(by: number): void {
-    const all = siblings();
-    const at = all.findIndex((a) => a.callId === shown?.callId);
-    const next = all[at + by];
+    const versionsOf = siblings();
+    const at = versionsOf.findIndex((a) => a.callId === shown?.callId);
+    const next = versionsOf[at + by];
     if (next) {
       shown = next;
       render();
@@ -112,26 +118,28 @@ export function createArtifactPane(ctx: AppContext, onClose: () => void): Artifa
   function render(): void {
     if (!shown) return;
     const artifact = shown;
-    const all = siblings();
-    const at = all.findIndex((a) => a.callId === artifact.callId);
+    const versionsOf = siblings();
+    const at = versionsOf.findIndex((a) => a.callId === artifact.callId);
     const kind = ARTIFACT_KINDS[artifact.kind];
-    title.textContent = artifact.title;
-    title.title = artifact.title;
     const language = artifact.kind === "code" && artifact.language ? ` · ${artifact.language}` : "";
-    sub.textContent = all.length > 1 ? `${kind.label}${language} · Version ${at + 1} of ${all.length}` : `${kind.label}${language}`;
-    versions.classList.toggle("hidden", all.length < 2);
+    view.title = artifact.title;
+    view.where = artifact.title;
+    view.label = versionsOf.length > 1 ? `${kind.label}${language} · Version ${at + 1} of ${versionsOf.length}` : `${kind.label}${language}`;
+    view.badge = { text: "", tone: "violet", icon: kind.icon };
+    view.changed?.();
+    versions.classList.toggle("hidden", versionsOf.length < 2);
     older.toggleAttribute("disabled", at <= 0);
-    newer.toggleAttribute("disabled", at >= all.length - 1);
+    newer.toggleAttribute("disabled", at >= versionsOf.length - 1);
     const hasPreview = artifact.kind !== "code";
     modes.classList.toggle("hidden", !hasPreview);
-    const view: Mode = hasPreview ? mode : "code";
-    previewTab.classList.toggle("is-active", view === "preview");
-    previewTab.setAttribute("aria-pressed", String(view === "preview"));
-    codeTab.classList.toggle("is-active", view === "code");
-    codeTab.setAttribute("aria-pressed", String(view === "code"));
+    const show: Mode = hasPreview ? mode : "code";
+    previewTab.classList.toggle("is-active", show === "preview");
+    previewTab.setAttribute("aria-pressed", String(show === "preview"));
+    codeTab.classList.toggle("is-active", show === "code");
+    codeTab.setAttribute("aria-pressed", String(show === "code"));
     openTab.classList.toggle("hidden", !framed(artifact));
-    if (framed(artifact)) openTab.setAttribute("href", artifactUrl(conversation, artifact.callId));
-    if (view === "preview" && framed(artifact)) {
+    if (framed(artifact)) openTab.setAttribute("href", artifactUrl(conversationId, artifact.callId));
+    if (show === "preview" && framed(artifact)) {
       // The same version keeps its frame (and what was done in it).
       if (frameFor === artifact.callId && body.querySelector("iframe")) return;
       const frame = document.createElement("iframe");
@@ -139,13 +147,13 @@ export function createArtifactPane(ctx: AppContext, onClose: () => void): Artifa
       frame.title = artifact.title;
       frame.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-popups allow-downloads");
       frame.setAttribute("referrerpolicy", "no-referrer");
-      frame.src = artifactUrl(conversation, artifact.callId);
+      frame.src = artifactUrl(conversationId, artifact.callId);
       frameFor = artifact.callId;
       body.replaceChildren(frame);
       return;
     }
     frameFor = "";
-    if (view === "preview" && artifact.kind === "markdown") {
+    if (show === "preview" && artifact.kind === "markdown") {
       const doc = h("div", { class: "ai-md ai-artifact-doc" });
       renderMarkdown(doc, artifact.content, {
         fullHeadings: true,
@@ -159,28 +167,8 @@ export function createArtifactPane(ctx: AppContext, onClose: () => void): Artifa
     body.replaceChildren(h("pre", { class: "ai-artifact-code" }, code));
   }
 
-  return {
-    el,
-    show(next, callId, conversationId) {
-      const found = next.find((a) => a.callId === callId);
-      if (!found) return;
-      if (shown?.key !== found.key) mode = "preview";
-      list = next;
-      conversation = conversationId;
-      shown = found;
-      render();
-    },
-    update(next) {
-      list = next;
-      if (shown) render();
-    },
-    close() {
-      shown = null;
-      frameFor = "";
-      body.replaceChildren();
-    },
-    shown: () => shown?.callId ?? null,
-  };
+  render();
+  return view;
 }
 
 /** The card an artifact call shows in the chat. */

@@ -244,26 +244,80 @@ left in milliseconds when it was sent, and what failed. Stop ends the wait
 (`status:"stopped"`); `POST …/retry` starts the try now. After the tenth the
 reply ends `error`, saying it tried again 10 times.
 
-### The viewer
+### The panel
 
-Pictures, videos and PDFs named in a chat open in a panel beside it (the
-artifact panel's place), without leaving the conversation: links in an
-answer (`[…](https://…/a.pdf)`, `![…](…)`, bare addresses), paths in the
-person's files (`[report](/shared/team/q3.pdf)` or `` `/clips/demo.mp4` ``),
-a finished `read_file`/`write_file` call (**View**), and pictures and PDFs
-sent in the chat. The kind comes from the extension: png, jpg/jpeg, gif,
-webp, avif, bmp, svg, ico; mp4, m4v, webm, ogv, mov; pdf.
+What a chat names opens in a tab of the panel beside it, without leaving
+the conversation: artifacts, links in an answer (`[…](https://…)`, `![…](…)`,
+bare addresses), paths in the person's files (`[report](/shared/team/q3.pdf)`
+or `` `/notes/plan.md` ``), a finished `read_file`/`write_file` call
+(**View**, and a card under the reply for each file it wrote), files sent in
+the chat, and a path or address typed after **+**. The same thing opens in
+the same tab. Each tab keeps its view while open; a chat keeps its tabs (with
+the window, and while another chat is in front). The path bar shows where it
+is and what it is, Preview/Source where both exist, Reload, Copy, Download,
+Open in a new tab and Show in File Station; **Fill** covers the window,
+**Hide** gives the chat its room (the chat's header brings the tabs back).
+
+By extension: pictures (png, jpg/jpeg, gif, webp, avif, bmp, svg, ico),
+videos (mp4, m4v, webm, ogv, mov), PDFs, documents (doc/docx/dotx/docm, odt,
+rtf; xls/xlsx/xlsm, ods; ppt/pptx/ppsx/pptm, odp), Markdown (rendered), CSV
+and TSV (a table, first 2,000 rows), JSON (formatted), HTML (a page), text
+and code (with line numbers, first 4 MB). Other files offer Download and
+File Station. An address with none of these is a web page.
 
 - A path opens with the person's own access through RAST: pictures and PDFs
-  from `GET /api/files/preview`, videos from `GET /api/files/download`
-  (ranges, so they seek). A path that is not there or theirs says so.
+  from `GET /api/files/preview`, text from `GET /api/files/text`, videos and
+  documents from `GET /api/files/download`. A path that is not there or
+  theirs says so.
+- An HTML file shows through `GET /api/ai/view/html?path=` (up to 2 MiB,
+  with their access) under the artifacts' policy: `sandbox` without
+  `allow-same-origin`, so its scripts reach neither the session nor RAST's
+  API; a few public CDNs only.
 - A chat file comes from `GET /api/ai/files/{id}`; PDFs are served `inline`
   with a `sandbox` CSP.
-- A web address goes through `GET /api/ai/view?url=` (signed in), so the
+- A web address goes through `GET /api/ai/view?url=&as=` (signed in), so the
   page keeps its strict CSP and the site sees the server, not the person:
-  http(s) to public addresses only (each redirect checked again, at most 6),
-  answers of an image, video or PDF type only, one `bytes=` range passed on
-  (`206` and `Content-Range` back), at most 512 MB, streamed. It answers
-  with the site's type, `Content-Disposition: inline`, `nosniff`,
-  `Referrer-Policy: no-referrer`, `Cache-Control: private, max-age=300` and
-  a `sandbox` CSP.
+  http(s) to public addresses only (each redirect checked again, at most 6).
+  `as=media` (default): image, video or PDF types, one `bytes=` range passed
+  on (`206` and `Content-Range` back), at most 512 MB, streamed, with the
+  site's type, `inline`, `nosniff`, `Referrer-Policy: no-referrer`,
+  `Cache-Control: private, max-age=300` and a `sandbox` CSP. `as=text`: text,
+  JSON, XML, YAML and code types, up to 4 MB, as `text/plain; charset=utf-8`.
+  `as=document`: office, OpenDocument and RTF types (or `octet-stream`/zip),
+  up to 64 MB, as an `application/octet-stream` attachment.
+- A web page: `GET /api/ai/view/page?url=` reads its head (public addresses,
+  first 512 KB) → `{url, title, description, siteName, image, icon,
+  contentType, frameable, refused}`. `frameable` is false when the site
+  sends `X-Frame-Options` (other than `ALLOWALL`) or a CSP `frame-ancestors`
+  without `*`/`https:`; `refused` says which. A frameable HTTPS page opens in
+  a sandboxed frame of its own origin (`allow-scripts allow-same-origin
+  allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads
+  allow-modals`, no top navigation), which needs RAST 0.9.19's page policy
+  (`frame-src 'self' https:`); else a card (picture, title, description,
+  Open in a new tab). An address that turns out to be a picture, video, PDF,
+  text or document opens as one.
+
+#### Documents as pages
+
+`POST /api/ai/view/convert?name=` (raw body, up to 64 MiB, CSRF) turns a
+Word, Excel, PowerPoint, OpenDocument or RTF document into a PDF → `{id}`;
+`GET /api/ai/view/converted/{id}` serves it (`inline`, `sandbox` CSP,
+`nosniff`) to the account that converted it. The window fetches the bytes
+(with the person's access, or through `/api/ai/view?as=document`) and posts
+them.
+
+- The extension picks the kind and the contents must match it (a ZIP for
+  Office Open XML/OpenDocument, an OLE file for older Office, `{\rtf`).
+- LibreOffice on the server converts it, in a systemd unit of its own
+  started by the root terminal helper (Terminal must be on): as `nobody`,
+  `PrivateNetwork`, `RestrictAddressFamilies=AF_UNIX`, home folders and
+  RAST's private paths hidden, a private `/tmp`, `ProtectSystem=strict`, no
+  capabilities, 1 GiB, 2 minutes, two at a time. The document goes in on the
+  unit's standard input and the PDF comes out on its standard output, so the
+  unit opens no file of the server.
+- Text documents need `libreoffice-writer-nogui` (or Writer), spreadsheets
+  `libreoffice-calc-nogui`, slides `libreoffice-impress-nogui`; a missing
+  part says which package adds it.
+- A PDF is kept per account under the app's data (`converted/<account>/
+  <sha256>.pdf`) for a week from its last use, so the same document opens at
+  once.

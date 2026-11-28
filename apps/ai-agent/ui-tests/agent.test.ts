@@ -4,7 +4,20 @@ import test from "node:test";
 import { agentHues } from "../src/apps/agent/marks";
 import { parseInline, parseMarkdown, safeHref } from "../src/apps/agent/markdown";
 import { compareVersions, whatsNewSince, WHATS_NEW } from "../src/apps/agent/whats-new";
-import { folderOf, looksLikePath, viewKindOf, viewOfChatFile, viewOfPath, viewOfUrl } from "../src/apps/agent/view";
+import {
+  badgeOf,
+  extensionOf,
+  folderOf,
+  kindLabel,
+  looksLikePath,
+  parseDelimited,
+  viewKey,
+  viewKindOf,
+  viewOfChatFile,
+  viewOfLink,
+  viewOfPath,
+  viewOfUrl,
+} from "../src/apps/agent/view";
 import {
   accountState,
   countedBars,
@@ -478,11 +491,17 @@ test("a reply waiting to try again counts down in whole seconds", () => {
   assert.equal(retryLabel(retry, -250), "Retrying 1/10 in 0s");
 });
 
-test("the viewer opens pictures, videos and PDFs by their names", () => {
+test("the panel knows files by their names", () => {
   assert.equal(viewKindOf("/home/report.PDF"), "pdf");
   assert.equal(viewKindOf("https://a.io/x/cat.jpeg?size=2#top"), "image");
   assert.equal(viewKindOf("clip.webm"), "video");
-  assert.equal(viewKindOf("notes.txt"), null);
+  assert.equal(viewKindOf("notes.txt"), "text");
+  assert.equal(viewKindOf("/shared/Q3 plan.docx"), "document");
+  assert.equal(viewKindOf("budget.XLSX"), "document");
+  assert.equal(viewKindOf("src/main.rs"), "text");
+  assert.equal(viewKindOf("Dockerfile"), "text");
+  assert.equal(viewKindOf("archive.zip"), null);
+  assert.equal(extensionOf("/a/b.tar.gz?x=1"), "gz");
   assert.equal(viewKindOf("/home/.png"), null);
   assert.equal(viewKindOf("https://a.io/download?file=a.png"), null);
   assert.equal(viewKindOf("https://a.io/"), null);
@@ -495,7 +514,20 @@ test("links open through the server, files with the person's own access", () => 
   assert.equal(web?.src, "/api/ai/view?url=https%3A%2F%2Fexample.com%2Fmedia%2FMy%2520Chart.png");
   assert.equal(web?.external, "https://example.com/media/My%20Chart.png");
   assert.equal(viewOfUrl("javascript:alert(1)//x.png"), null);
-  assert.equal(viewOfUrl("https://example.com/page.html"), null);
+  const page = viewOfUrl("https://example.com/page.html");
+  assert.equal(page?.kind, "website", "a page opens as one, HTML or not");
+  assert.equal(page?.src, "https://example.com/page.html");
+  assert.equal(viewOfUrl("https://example.com/")?.kind, "website");
+  const notes = viewOfUrl("https://example.com/notes.md");
+  assert.equal(notes?.kind, "text");
+  assert.equal(notes?.format, "markdown");
+  assert.equal(notes?.src, "/api/ai/view?url=https%3A%2F%2Fexample.com%2Fnotes.md&as=text");
+  const sheet = viewOfUrl("https://example.com/f/budget.xlsx");
+  assert.equal(sheet?.kind, "document");
+  assert.equal(sheet?.family, "sheet");
+  assert.equal(sheet?.src, "/api/ai/view?url=https%3A%2F%2Fexample.com%2Ff%2Fbudget.xlsx&as=document");
+  assert.equal(viewOfLink("/reports/q3.docx")?.kind, "document");
+  assert.equal(viewOfLink("https://example.com/a.png")?.kind, "image");
 
   const pdf = viewOfPath("/shared/team/Q3 report.pdf");
   assert.equal(pdf?.src, "/api/files/preview?path=%2Fshared%2Fteam%2FQ3%20report.pdf");
@@ -512,7 +544,53 @@ test("links open through the server, files with the person's own access", () => 
   assert.equal(folderOf("/pic.png"), "/");
 
   assert.equal(viewOfChatFile({ id: "f1", name: "scan.pdf", kind: "pdf" })?.src, "/api/ai/files/f1");
-  assert.equal(viewOfChatFile({ id: "f2", name: "notes.txt", kind: "text" }), null);
+  const sent = viewOfChatFile({ id: "f2", name: "notes.md", kind: "text" });
+  assert.equal(sent?.kind, "text");
+  assert.equal(sent?.format, "markdown");
+  assert.equal(viewOfChatFile({ id: "f3", name: "page.html", kind: "text" })?.format, "plain", "a sent page shows as its source");
+
+  const doc = viewOfPath("/shared/team/Q3 plan.docx");
+  assert.equal(doc?.kind, "document");
+  assert.equal(doc?.src, "/api/files/download?path=%2Fshared%2Fteam%2FQ3%20plan.docx", "its bytes go to the converter");
+  const md = viewOfPath("/notes/README.md");
+  assert.equal(md?.src, "/api/files/text?path=%2Fnotes%2FREADME.md");
+  const other = viewOfPath("/backups/site.zip");
+  assert.equal(other?.kind, "other", "any file opens: a download and File Station");
+  assert.equal(viewKey(doc!), "v:/shared/team/Q3 plan.docx");
+  assert.equal(viewKey(viewOfUrl("https://a.io/")!), "v:https://a.io/");
+});
+
+test("tabs show what each thing is", () => {
+  const kinds: [string, string, string][] = [
+    ["/a/plan.docx", "W", "Document"],
+    ["/a/budget.xlsx", "XLS", "Spreadsheet"],
+    ["/a/deck.pptx", "PPT", "Slides"],
+    ["/a/scan.pdf", "PDF", "PDF"],
+    ["/a/README.md", "MD", "Markdown"],
+    ["/a/data.csv", "CSV", "CSV"],
+    ["/a/main.rs", "RS", "Code"],
+    ["/a/site.zip", "ZIP", "File"],
+  ];
+  for (const [path, badge, label] of kinds) {
+    const target = viewOfPath(path)!;
+    assert.equal(badgeOf(target).text, badge, path);
+    assert.equal(kindLabel(target), label, path);
+  }
+  assert.equal(badgeOf(viewOfUrl("https://a.io/")!).icon, "browser");
+  assert.equal(kindLabel(viewOfUrl("https://a.io/")!), "Web page");
+});
+
+test("CSV and TSV become rows", () => {
+  assert.deepEqual(parseDelimited('name,note\nAda,"says ""hi"", twice"\r\nBo,"two\nlines"\n', ","), [
+    ["name", "note"],
+    ["Ada", 'says "hi", twice'],
+    ["Bo", "two\nlines"],
+  ]);
+  assert.deepEqual(parseDelimited("a\tb\n1\t2", "\t"), [
+    ["a", "b"],
+    ["1", "2"],
+  ]);
+  assert.equal(parseDelimited("1\n2\n3\n4\n", ",", 2).length, 2);
 });
 
 test("pictures and file links in answers become links the viewer opens", () => {

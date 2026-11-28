@@ -118,11 +118,13 @@ async fn run() -> Result<(), String> {
     }
     super::run::recover(&agent.db).await;
     super::files::sweep(&agent.db, agent.data_dir()).await;
+    super::convert::sweep(agent.data_dir());
     super::spawn_price_refresh(agent.db.clone(), agent.secrets.clone());
     let tidy = agent.clone();
     tokio::spawn(async move {
         loop {
             forget_removed_accounts(&tidy).await;
+            super::convert::sweep(tidy.data_dir());
             tokio::time::sleep(TIDY_EVERY).await;
         }
     });

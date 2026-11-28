@@ -1266,35 +1266,7 @@ button.ai-artifact-card:hover {
   display: flex;
 }
 
-.ai-artifact-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 52px;
-  padding: 8px 10px 8px 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.ai-artifact-titles {
-  flex: 1;
-  min-width: 0;
-}
-
-.ai-artifact-title {
-  overflow: hidden;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ai-artifact-sub {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ai-artifact-versions,
-.ai-artifact-actions {
+.ai-artifact-versions {
   display: flex;
   flex: none;
   gap: 2px;
@@ -1315,11 +1287,237 @@ button.ai-artifact-card:hover {
   overflow: auto;
 }
 
-/* The viewer (viewer.ts): a picture, video or PDF in the artifact's place. */
-.app-agent.is-viewing .ai-artifact:not(.ai-viewer),
-.app-agent:not(.is-viewing) .ai-viewer {
+/* The panel's tabs (panel.ts): a strip of tabs with + / Fill / Hide, then
+   the path bar (where it is, what it is, its controls and actions). */
+.ai-tabbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 42px;
+  padding: 5px 8px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--ai-tint);
+}
+
+.ai-tabs {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  align-self: stretch;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ai-tabs::-webkit-scrollbar {
   display: none;
 }
+
+.ai-tab {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  max-width: 200px;
+  height: 34px;
+  margin-bottom: -1px;
+  padding: 0 6px 0 9px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 9px 9px 0 0;
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  user-select: none;
+}
+
+.ai-tab:hover {
+  background: var(--ai-tint);
+  color: var(--text);
+}
+
+.ai-tab.is-active {
+  border-color: var(--border);
+  background: var(--surface-solid, var(--surface));
+  color: var(--text);
+}
+
+.ai-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.ai-tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tab-close {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+}
+
+.ai-tab-close:hover {
+  background: var(--ai-tint-2);
+  opacity: 1;
+}
+
+.ai-tabbar-tools {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding-bottom: 4px;
+}
+
+.ai-tab-add {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-tab-add-field {
+  width: 100%;
+}
+
+.ai-panel-show {
+  flex: none;
+  gap: 4px;
+}
+
+/* A file's type: a small coloured mark (PDF, W, XLS, MD, …), a site's icon. */
+.ai-badge {
+  --badge: #64748b;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--badge);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ai-badge.is-red {
+  --badge: #dc3b3b;
+}
+
+.ai-badge.is-blue {
+  --badge: #2b6fd6;
+}
+
+.ai-badge.is-green {
+  --badge: #16884a;
+}
+
+.ai-badge.is-orange {
+  --badge: #d4620b;
+}
+
+.ai-badge.is-violet {
+  --badge: #7c4ddb;
+}
+
+.ai-badge.has-image {
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.ai-badge.has-image img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.ai-badge.is-big {
+  min-width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.ai-pathbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* A long path gives way at its start, so its name stays in view. */
+.ai-panel-where {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-panel-label {
+  flex: none;
+}
+
+.ai-panel-tools,
+.ai-panel-tools-row,
+.ai-panel-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.ai-panel-tools-row {
+  gap: 6px;
+}
+
+.ai-panel-bodies {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ai-panel-body {
+  flex: 1;
+}
+
+.ai-panel-body.hidden {
+  display: none;
+}
+
+/* Fill: the panel covers the window until it goes back beside the chat. */
+.app-agent.has-artifact.is-panel-wide .ai-artifact {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  border-left: 0;
+}
+
+/* A file or page in a tab (viewer.ts). */
 
 .ai-view-body {
   display: flex;
@@ -1378,6 +1576,229 @@ button.ai-artifact-card:hover {
 .ai-view-note {
   margin: auto;
   padding: 24px;
+}
+
+.ai-view-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-view-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ai-view-site {
+  background: #fff;
+}
+
+.ai-view-more {
+  margin: 0;
+  padding: 8px 16px 14px;
+}
+
+/* Code and text with line numbers. */
+.ai-code-view {
+  display: flex;
+  min-height: 100%;
+  background: var(--surface-inset, var(--surface-2));
+}
+
+.ai-code-lines {
+  flex: none;
+  padding: 14px 10px 14px 14px;
+  border-right: 1px solid var(--border);
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.55;
+  text-align: right;
+  white-space: pre;
+  user-select: none;
+}
+
+.ai-code-view .ai-artifact-code {
+  flex: 1;
+  min-width: 0;
+  overflow: visible;
+}
+
+/* A CSV or TSV as a table. */
+.ai-view-table-wrap {
+  min-height: 100%;
+  overflow: auto;
+}
+
+.ai-view-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--font-size-sm);
+}
+
+.ai-view-table th,
+.ai-view-table td {
+  max-width: 320px;
+  padding: 5px 10px;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-view-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-2);
+  font-weight: 600;
+}
+
+.ai-view-table tbody tr:nth-child(even) td {
+  background: var(--ai-tint);
+}
+
+/* A web page that opens in its own tab: a card of what it is. */
+.ai-page-card-wrap {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.ai-page-card {
+  width: min(460px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-solid, var(--surface));
+}
+
+.ai-page-image {
+  display: block;
+  width: 100%;
+  max-height: 240px;
+  object-fit: cover;
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-page-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 16px 18px 18px;
+}
+
+.ai-page-site {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-page-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.ai-page-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.ai-page-description {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.ai-page-open {
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.ai-page-why {
+  margin: 0;
+}
+
+/* The files a reply wrote: a card each, to open beside the chat. */
+.ai-file-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ai-file-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 520px;
+  padding: 6px 8px 6px 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-solid, var(--surface));
+}
+
+.ai-file-card:hover {
+  border-color: var(--border-strong);
+}
+
+.ai-file-card-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-file-card-main:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.ai-file-card-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ai-file-card-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-file-card-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-file-card-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
 }
 
 .ai-view-note {
@@ -1470,7 +1891,7 @@ button.ai-artifact-card:hover {
     border-left: 0;
   }
 
-  .ai-artifact-head {
+  .ai-pathbar {
     flex-wrap: wrap;
   }
 }

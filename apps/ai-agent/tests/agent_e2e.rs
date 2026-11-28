@@ -3097,6 +3097,181 @@ async fn ai_viewer_opens_media_from_public_places_and_chat_pdfs_inline() {
     assert_eq!(header(header::X_CONTENT_TYPE_OPTIONS), "nosniff");
 }
 
+#[tokio::test]
+async fn ai_panel_shows_html_files_walled_off_and_checks_documents_and_pages() {
+    let server = TestServer::start().await;
+    server
+        .create_user("admin", ADMIN_PASSWORD, Role::Admin)
+        .await;
+    server.create_user("alice", USER_PASSWORD, Role::User).await;
+    server.create_user("bob", USER_PASSWORD, Role::User).await;
+    let admin = server.login("admin", ADMIN_PASSWORD).await;
+    let alice = server.login("alice", USER_PASSWORD).await;
+    let bob = server.login("bob", USER_PASSWORD).await;
+    let alice_id = server.user_id("alice").await;
+    install_ai_agent_app(&server, &admin, Some(alice_id)).await;
+
+    // An HTML file in Alice's files shows as a page under the artifacts'
+    // policy: scripts in an opaque origin, no RAST API.
+    let (status, _) = server
+        .request_raw(
+            "POST",
+            "/api/files/upload?dir=%2F&name=demo.html",
+            b"<!doctype html><h1>Hi</h1><script>1</script>".to_vec(),
+            "application/octet-stream",
+            alice.headers_with_csrf(),
+        )
+        .await;
+    assert!(status.is_success(), "{status}");
+    let (status, headers, _) = server
+        .request(
+            "GET",
+            "/api/ai/view/html?path=%2Fdemo.html",
+            None,
+            alice.headers(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let header = |headers: &HeaderMap, name: header::HeaderName| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    };
+    assert_eq!(
+        header(&headers, header::CONTENT_TYPE),
+        "text/html; charset=utf-8"
+    );
+    let policy = header(&headers, header::CONTENT_SECURITY_POLICY);
+    assert!(policy.starts_with("sandbox allow-scripts"), "{policy}");
+    assert!(!policy.contains("allow-same-origin"), "{policy}");
+    assert!(policy.contains("frame-ancestors 'self'"), "{policy}");
+    // Only .html, for those with AI Agent.
+    let (status, _, _) = server
+        .request(
+            "GET",
+            "/api/ai/view/html?path=%2Fnotes.txt",
+            None,
+            alice.headers(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = server
+        .request(
+            "GET",
+            "/api/ai/view/html?path=%2Fdemo.html",
+            None,
+            bob.headers(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "Bob has no AI Agent");
+    let (status, _, _) = server
+        .request(
+            "GET",
+            "/api/ai/view/html?path=%2Fdemo.html",
+            None,
+            HeaderMap::new(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Documents: only the kinds LibreOffice opens, with their contents.
+    for (name, bytes, says) in [
+        ("notes.txt", b"hello".to_vec(), "Word, spreadsheet, slides"),
+        (
+            "plan.docx",
+            b"<html>not a document</html>".to_vec(),
+            "no .docx document inside",
+        ),
+    ] {
+        let (status, body) = server
+            .request_raw(
+                "POST",
+                &format!("/api/ai/view/convert?name={name}"),
+                bytes,
+                "application/octet-stream",
+                alice.headers_with_csrf(),
+            )
+            .await;
+        let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains(says),
+            "{name}: {body}"
+        );
+    }
+    let (status, _) = server
+        .request_raw(
+            "POST",
+            "/api/ai/view/convert?name=plan.docx",
+            b"PK\x03\x04".to_vec(),
+            "application/octet-stream",
+            alice.headers(),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a change needs the CSRF token"
+    );
+    // Converted pages are named by their hash, and kept per account.
+    for id in ["../../etc/passwd", "abc", &"A".repeat(64), &"a".repeat(64)] {
+        let (status, _, _) = server
+            .request(
+                "GET",
+                &format!("/api/ai/view/converted/{}", id.replace('/', "%2F")),
+                None,
+                alice.headers(),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{id}");
+    }
+
+    // A page's details: public addresses only.
+    let (status, _, _) = server
+        .request(
+            "GET",
+            "/api/ai/view/page?url=https%3A%2F%2Fexample.com%2F",
+            None,
+            HeaderMap::new(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    for url in [
+        "http://127.0.0.1:9/",
+        "http://localhost/",
+        "http://192.168.1.1/admin",
+    ] {
+        let path = format!(
+            "/api/ai/view/page?url={}",
+            url.replace(':', "%3A").replace('/', "%2F")
+        );
+        let (status, _, body) = server.request("GET", &path, None, alice.headers()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{url}: {body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("private network"),
+            "{url}: {body}"
+        );
+    }
+    // Text and documents from the web: `as` names the kind.
+    let (status, _, _) = server
+        .request(
+            "GET",
+            "/api/ai/view?url=https%3A%2F%2Fexample.com%2Fa.md&as=music",
+            None,
+            alice.headers(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
 async fn install_ai_agent_app(server: &TestServer, admin: &Session, user_id: Option<i64>) {
     if let Some(user_id) = user_id {
         let (status, _, body) = server

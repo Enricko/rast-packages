@@ -380,7 +380,7 @@ function inlineNodes(items: Inline[], parent: Node): void {
       case "code": {
         const el = document.createElement("code");
         el.textContent = item.v;
-        // A path to a picture, video or PDF opens in the viewer.
+        // A path to a file the panel shows opens there.
         parent.appendChild(looksLikePath(item.v) && viewKindOf(item.v) ? viewLink({ viewPath: item.v }, el) : el);
         break;
       }
@@ -397,8 +397,9 @@ function inlineNodes(items: Inline[], parent: Node): void {
         el.href = item.href;
         el.target = "_blank";
         el.rel = "noopener noreferrer nofollow";
-        // A picture, video or PDF on the web opens in the viewer.
-        if (/^https?:/i.test(item.href) && viewKindOf(item.href)) {
+        // A page, picture, video, document or text on the web opens in a
+        // tab of the panel (a click with a modifier key: the browser's tab).
+        if (/^https?:/i.test(item.href)) {
           el.dataset.viewUrl = item.href;
           el.classList.add("ai-view-link");
         }
@@ -409,14 +410,14 @@ function inlineNodes(items: Inline[], parent: Node): void {
       case "file": {
         const label = document.createElement("span");
         inlineNodes(item.c, label);
-        parent.appendChild(viewKindOf(item.path) ? viewLink({ viewPath: item.path }, label) : label);
+        parent.appendChild(looksLikePath(item.path) ? viewLink({ viewPath: item.path }, label) : label);
         break;
       }
     }
   }
 }
 
-/** A link the chat opens in the viewer beside it (`data-view-path`/`-url`). */
+/** A link the chat opens in the panel beside it (`data-view-path`/`-url`). */
 function viewLink(data: { viewPath?: string; viewUrl?: string }, ...children: Node[]): HTMLAnchorElement {
   const el = document.createElement("a");
   el.href = "#";
