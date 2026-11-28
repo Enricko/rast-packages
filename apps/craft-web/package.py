@@ -109,6 +109,15 @@ def check(config: dict) -> None:
         size = app["defaultSize"]
         if not (200 <= size["w"] <= 4000 and 150 <= size["h"] <= 3000):
             fail(f"{package}: defaultSize out of range")
+        for key in ("files", "commands"):
+            if app.get(key, True) is not True:
+                fail(f"{package}: {key} is true or absent")
+        opens = app.get("opens", [])
+        if opens and not app.get("files"):
+            fail(f"{package}: opens needs files (the app takes documents from RAST)")
+        for ext in opens:
+            if not re.match(r"^\.[a-z0-9]{1,15}$", ext):
+                fail(f"{package}: opens entry {ext!r} is not a lowercase .extension")
     print(f"crafts.json: {len(seen)} apps, key {upstream['signingKeyFingerprint']}")
 
 
@@ -231,16 +240,45 @@ def build(config: dict, package: str, out_dir: Path) -> None:
     print("\n".join(sums))
 
 
+def what_it_does(app: dict) -> str:
+    """How the app works in RAST, as its description says it."""
+    if app.get("files") and app.get("commands"):
+        return "it opens and saves files in your RAST files, and AI Agent can work in it"
+    if app.get("files"):
+        return "it opens and saves files in your RAST files"
+    if app.get("commands"):
+        return "open files from your device and save them as downloads; AI Agent can work in it"
+    return "open files from your device and save them as downloads"
+
+
+# The RAST release whose web page windows carry the bridge: an app with
+# `files` or `commands` (and `opens`) needs it.
+BRIDGE_RAST = "0.9.20"
+
+
+def version_key(version: str) -> tuple:
+    return tuple(int(part) for part in version.split("."))
+
+
+def min_rast_for(app: dict, min_rast: str) -> str:
+    if (app.get("files") or app.get("commands")) and version_key(min_rast) < version_key(BRIDGE_RAST):
+        return BRIDGE_RAST
+    return min_rast
+
+
 def catalog_entries(config: dict, min_rast: str) -> None:
     upstream = config["upstream"]
     entries = {}
     for app in config["apps"]:
         package = app["package"]
+        window = {"entry": "web/index.html", "sdk": 1, "singleton": True, "defaultSize": app["defaultSize"]}
+        if app.get("opens"):
+            window["opens"] = app["opens"]
         entries[package] = {
             "name": app["name"],
             "description": (
                 f"{app['summary']} ArtCraft's {app['name']} (open source, {upstream['license']}), "
-                f"its web version in a sandboxed window: open files from your device and save them as downloads. "
+                f"its web version in a sandboxed window: {what_it_does(app)}. "
                 f"Packaged from upstream's signed release by this repository's craft-web workflow."
             ),
             "homepage": app["homepage"],
@@ -249,11 +287,8 @@ def catalog_entries(config: dict, min_rast: str) -> None:
             "keepPatches": 1,
             "githubAttestations": True,
             "releaseRepos": ["Enricko/rast-packages"],
-            "minRastVersion": min_rast,
-            "app": {
-                "id": package,
-                "window": {"entry": "web/index.html", "sdk": 1, "singleton": True, "defaultSize": app["defaultSize"]},
-            },
+            "minRastVersion": min_rast_for(app, min_rast),
+            "app": {"id": package, "window": window},
             "channels": [{"id": "stable", "label": app["name"], "status": "stable"}],
         }
     print(json.dumps(entries, indent=2))

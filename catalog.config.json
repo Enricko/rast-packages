@@ -86,7 +86,16 @@
     "php@8.5.13": 2,
     "rust@1.100.0": 2,
     "zig@0.17.0": 2,
-    "zig@0.17.1": 2
+    "zig@0.17.1": 2,
+    "pdfcraft@0.22.0": 2,
+    "filmcraft@0.20.1": 2,
+    "wordcraft@0.19.1": 2,
+    "lightcraft@0.21.1": 2,
+    "vectorcraft@0.24.1": 2,
+    "cadcraft@0.20.1": 2,
+    "gridcraft@0.19.1": 2,
+    "figcraft@0.18.1": 2,
+    "deckcraft@0.19.1": 2
   },
   "packages": {
     "python": {
@@ -589,7 +598,7 @@
     },
     "pdfcraft": {
       "name": "PdfCraft",
-      "description": "Read, annotate and edit PDF documents. ArtCraft's PdfCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "description": "Read, annotate and edit PDF documents. ArtCraft's PdfCraft (open source, Apache-2.0), its web version in a sandboxed window: it opens and saves files in your RAST files, and AI Agent can work in it. Packaged from upstream's signed release by this repository's craft-web workflow.",
       "homepage": "https://getartcraft.com/apps/pdfcraft",
       "license": "Apache-2.0",
       "icon": "icons/pdfcraft.png",
@@ -598,7 +607,7 @@
       "releaseRepos": [
         "Enricko/rast-packages"
       ],
-      "minRastVersion": "0.9.19",
+      "minRastVersion": "0.9.20",
       "app": {
         "id": "pdfcraft",
         "window": {
@@ -608,7 +617,10 @@
           "defaultSize": {
             "w": 1180,
             "h": 820
-          }
+          },
+          "opens": [
+            ".pdf"
+          ]
         }
       },
       "channels": [
@@ -621,7 +633,7 @@
     },
     "filmcraft": {
       "name": "FilmCraft",
-      "description": "Nonlinear video editor. ArtCraft's FilmCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "description": "Nonlinear video editor. ArtCraft's FilmCraft (open source, Apache-2.0), its web version in a sandboxed window: it opens and saves files in your RAST files, and AI Agent can work in it. Packaged from upstream's signed release by this repository's craft-web workflow.",
       "homepage": "https://getartcraft.com/apps/filmcraft",
       "license": "Apache-2.0",
       "icon": "icons/filmcraft.png",
@@ -630,7 +642,7 @@
       "releaseRepos": [
         "Enricko/rast-packages"
       ],
-      "minRastVersion": "0.9.19",
+      "minRastVersion": "0.9.20",
       "app": {
         "id": "filmcraft",
         "window": {
@@ -640,7 +652,10 @@
           "defaultSize": {
             "w": 1280,
             "h": 820
-          }
+          },
+          "opens": [
+            ".fcproj"
+          ]
         }
       },
       "channels": [
@@ -653,7 +668,7 @@
     },
     "wordcraft": {
       "name": "WordCraft",
-      "description": "Word processor for documents and letters. ArtCraft's WordCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "description": "Word processor for documents and letters. ArtCraft's WordCraft (open source, Apache-2.0), its web version in a sandboxed window: it opens and saves files in your RAST files, and AI Agent can work in it. Packaged from upstream's signed release by this repository's craft-web workflow.",
       "homepage": "https://getartcraft.com/apps/wordcraft",
       "license": "Apache-2.0",
       "icon": "icons/wordcraft.png",
@@ -662,7 +677,7 @@
       "releaseRepos": [
         "Enricko/rast-packages"
       ],
-      "minRastVersion": "0.9.19",
+      "minRastVersion": "0.9.20",
       "app": {
         "id": "wordcraft",
         "window": {
@@ -672,7 +687,16 @@
           "defaultSize": {
             "w": 1100,
             "h": 800
-          }
+          },
+          "opens": [
+            ".docx",
+            ".doc",
+            ".dotx",
+            ".odt",
+            ".rtf",
+            ".md",
+            ".tex"
+          ]
         }
       },
       "channels": [
@@ -685,7 +709,7 @@
     },
     "lightcraft": {
       "name": "LightCraft",
-      "description": "Non-destructive photo developing and retouching. ArtCraft's LightCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "description": "Non-destructive photo developing and retouching. ArtCraft's LightCraft (open source, Apache-2.0), its web version in a sandboxed window: it opens and saves files in your RAST files. Packaged from upstream's signed release by this repository's craft-web workflow.",
       "homepage": "https://getartcraft.com/apps/lightcraft",
       "license": "Apache-2.0",
       "icon": "icons/lightcraft.png",
@@ -694,7 +718,7 @@
       "releaseRepos": [
         "Enricko/rast-packages"
       ],
-      "minRastVersion": "0.9.19",
+      "minRastVersion": "0.9.20",
       "app": {
         "id": "lightcraft",
         "window": {
@@ -717,7 +741,7 @@
     },
     "vectorcraft": {
       "name": "VectorCraft",
-      "description": "Vector illustration and graphics. ArtCraft's VectorCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "description": "Vector illustration and graphics. ArtCraft's VectorCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads; AI Agent can work in it. Packaged from upstream's signed release by this repository's craft-web workflow.",
       "homepage": "https://getartcraft.com/apps/vectorcraft",
       "license": "Apache-2.0",
       "icon": "icons/vectorcraft.png",
@@ -726,7 +750,7 @@
       "releaseRepos": [
         "Enricko/rast-packages"
       ],
-      "minRastVersion": "0.9.19",
+      "minRastVersion": "0.9.20",
       "app": {
         "id": "vectorcraft",
         "window": {
@@ -781,7 +805,7 @@
     },
     "cadcraft": {
       "name": "CADCraft",
-      "description": "Computer-aided design and drafting. ArtCraft's CADCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "description": "Computer-aided design and drafting. ArtCraft's CADCraft (open source, Apache-2.0), its web version in a sandboxed window: it opens and saves files in your RAST files, and AI Agent can work in it. Packaged from upstream's signed release by this repository's craft-web workflow.",
       "homepage": "https://github.com/storytold/cadcraft",
       "license": "Apache-2.0",
       "icon": "icons/cadcraft.png",
@@ -790,7 +814,7 @@
       "releaseRepos": [
         "Enricko/rast-packages"
       ],
-      "minRastVersion": "0.9.19",
+      "minRastVersion": "0.9.20",
       "app": {
         "id": "cadcraft",
         "window": {
@@ -800,7 +824,10 @@
           "defaultSize": {
             "w": 1280,
             "h": 820
-          }
+          },
+          "opens": [
+            ".dxf"
+          ]
         }
       },
       "channels": [
@@ -813,7 +840,7 @@
     },
     "gridcraft": {
       "name": "GridCraft",
-      "description": "Spreadsheets with formulas and charts. ArtCraft's GridCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "description": "Spreadsheets with formulas and charts. ArtCraft's GridCraft (open source, Apache-2.0), its web version in a sandboxed window: it opens and saves files in your RAST files, and AI Agent can work in it. Packaged from upstream's signed release by this repository's craft-web workflow.",
       "homepage": "https://github.com/storytold/gridcraft",
       "license": "Apache-2.0",
       "icon": "icons/gridcraft.png",
@@ -822,7 +849,7 @@
       "releaseRepos": [
         "Enricko/rast-packages"
       ],
-      "minRastVersion": "0.9.19",
+      "minRastVersion": "0.9.20",
       "app": {
         "id": "gridcraft",
         "window": {
@@ -832,7 +859,11 @@
           "defaultSize": {
             "w": 1200,
             "h": 800
-          }
+          },
+          "opens": [
+            ".xlsx",
+            ".csv"
+          ]
         }
       },
       "channels": [
@@ -845,7 +876,7 @@
     },
     "figcraft": {
       "name": "FigCraft",
-      "description": "Interface design and prototyping. ArtCraft's FigCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "description": "Interface design and prototyping. ArtCraft's FigCraft (open source, Apache-2.0), its web version in a sandboxed window: it opens and saves files in your RAST files, and AI Agent can work in it. Packaged from upstream's signed release by this repository's craft-web workflow.",
       "homepage": "https://getartcraft.com/apps/figcraft",
       "license": "Apache-2.0",
       "icon": "icons/figcraft.png",
@@ -854,7 +885,7 @@
       "releaseRepos": [
         "Enricko/rast-packages"
       ],
-      "minRastVersion": "0.9.19",
+      "minRastVersion": "0.9.20",
       "app": {
         "id": "figcraft",
         "window": {
@@ -864,7 +895,11 @@
           "defaultSize": {
             "w": 1280,
             "h": 820
-          }
+          },
+          "opens": [
+            ".figcraft",
+            ".fig"
+          ]
         }
       },
       "channels": [
@@ -909,7 +944,7 @@
     },
     "deckcraft": {
       "name": "DeckCraft",
-      "description": "Presentations and slide shows. ArtCraft's DeckCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "description": "Presentations and slide shows. ArtCraft's DeckCraft (open source, Apache-2.0), its web version in a sandboxed window: it opens and saves files in your RAST files, and AI Agent can work in it. Packaged from upstream's signed release by this repository's craft-web workflow.",
       "homepage": "https://getartcraft.com/apps/slidecraft",
       "license": "Apache-2.0",
       "icon": "icons/deckcraft.png",
@@ -918,7 +953,7 @@
       "releaseRepos": [
         "Enricko/rast-packages"
       ],
-      "minRastVersion": "0.9.19",
+      "minRastVersion": "0.9.20",
       "app": {
         "id": "deckcraft",
         "window": {
@@ -928,7 +963,13 @@
           "defaultSize": {
             "w": 1200,
             "h": 800
-          }
+          },
+          "opens": [
+            ".pptx",
+            ".ppt",
+            ".pps",
+            ".pot"
+          ]
         }
       },
       "channels": [

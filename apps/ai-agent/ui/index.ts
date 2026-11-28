@@ -46,6 +46,7 @@ import {
   fileUrl,
   openAppTarget,
   toolArgument,
+  useAppCall,
   toolBlocks,
   upsertMessage,
   type ContentBlock,
@@ -512,8 +513,66 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   // opens wait for a click.
   let seenArtifacts = new Set<string>();
   /** Chats whose replies this page started (sent, answered, retried): the
-   * apps their agent opens open here, not on the account's other pages. */
-  const startedHere = new Set<string>();
+   * apps their agent opens open here, not on the account's other pages, and
+   * its work in apps runs here. Kept for the tab, so a reload goes on. */
+  const STARTED_KEY = "rast.agent.startedHere";
+  const startedHere = new Set<string>(readStarted());
+  function readStarted(): string[] {
+    try {
+      const list: unknown = JSON.parse(sessionStorage.getItem(STARTED_KEY) ?? "[]");
+      return Array.isArray(list) ? list.filter((id): id is string => typeof id === "string").slice(-50) : [];
+    } catch {
+      return [];
+    }
+  }
+  function markStarted(id: string): void {
+    startedHere.delete(id);
+    startedHere.add(id);
+    try {
+      sessionStorage.setItem(STARTED_KEY, JSON.stringify([...startedHere].slice(-50)));
+    } catch {
+      // Storage full or off: this page still knows.
+    }
+  }
+
+  /** `use_app` calls this page ran or runs (`conversation:call`). */
+  const ranCalls = new Set<string>();
+
+  /** Run the agent's work in apps for a reply this page started: the app's
+   * window does it, and the reply waits for the answer. */
+  function runAppCalls(conversationId: string, message: Message): void {
+    if (message.role !== "assistant" || !startedHere.has(conversationId)) return;
+    for (const block of message.content) {
+      if (block.type !== "tool" || block.name !== "use_app" || block.status !== "running") continue;
+      const key = `${conversationId}:${block.id}`;
+      if (ranCalls.has(key)) continue;
+      ranCalls.add(key);
+      void runAppCall(conversationId, block);
+    }
+  }
+
+  async function runAppCall(conversationId: string, block: ToolBlock): Promise<void> {
+    const call = useAppCall(block);
+    // RAST 0.9.20 and later hand requests to an app's window.
+    const request = (ctx.desktop as { request?: (appId: string, method: string, params?: unknown) => Promise<unknown> }).request;
+    let body: { ok: boolean; result?: unknown; error?: string };
+    if (!call) {
+      body = { ok: false, error: "the call names no app and method" };
+    } else if (typeof request !== "function") {
+      body = { ok: false, error: "this RAST hands no requests to apps yet: an administrator updates RAST to 0.9.20 or later" };
+    } else {
+      try {
+        body = { ok: true, result: (await request(call.app, call.method, call.params)) ?? null };
+      } catch (error) {
+        body = { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    try {
+      await ctx.api.post(`/api/ai/conversations/${encodeURIComponent(conversationId)}/tools/${encodeURIComponent(block.id)}/answer`, body);
+    } catch {
+      // The reply no longer waits (stopped, or it gave up).
+    }
+  }
   /** `open_app` calls already acted on, or done before the chat was shown. */
   let seenOpens = new Set<string>();
 
@@ -530,6 +589,17 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       return;
     }
     ctx.openApp(target.app, target.params);
+  }
+
+  /** Bring forward the app the agent works in. */
+  function showApp(block: ToolBlock): void {
+    const call = useAppCall(block);
+    if (!call) return;
+    if (!ctx.desktop.apps().some((app) => app.id === call.app)) {
+      ctx.toast.warning(`${appName(call.app)} is not available to this account.`);
+      return;
+    }
+    ctx.openApp(call.app);
   }
 
   /** Open the apps the agent asked for in a reply this page started. */
@@ -763,6 +833,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       current = detail;
       if (switching) seenArtifacts = new Set(chatArtifacts(detail.messages).map((a) => a.callId));
       if (switching) seenOpens = doneOpens(detail.messages);
+      for (const message of detail.messages) runAppCalls(id, message);
       renderAll(switching);
       const place = options_.place;
       if (place && (place.tabs || place.artifact)) restoreTabs(place);
@@ -878,7 +949,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         current = { conversation: created.conversation, messages: [], seq: 0, readOnly: false };
         saveWindow();
       }
-      startedHere.add(id);
+      markStarted(id);
       const sent = await ctx.api.post<{ conversation: Conversation; message: Message; reply: Message }>(
         `/api/ai/conversations/${encodeURIComponent(id)}/messages`,
         { text, files: files.map((file) => file.id) },
@@ -920,7 +991,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   /** A reply waiting to try again tries now. */
   async function retryNow(): Promise<void> {
     if (!current) return;
-    startedHere.add(current.conversation.id);
+    markStarted(current.conversation.id);
     try {
       await ctx.api.post(`/api/ai/conversations/${encodeURIComponent(current.conversation.id)}/retry`);
     } catch (error) {
@@ -934,7 +1005,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     const id = current.conversation.id;
     const owner = current.messages.find((m) => m.content.some((b) => b.type === "tool" && b.id === call.id));
     const before = owner ? heardCount(owner.id) : 0;
-    startedHere.add(id);
+    markStarted(id);
     try {
       const body = await ctx.api.post<{ message: Message; conversation: Conversation }>(
         `/api/ai/conversations/${encodeURIComponent(id)}/tools/${encodeURIComponent(call.id)}`,
@@ -1665,6 +1736,14 @@ function mountAgentApp(ctx: AppContext): AppInstance {
               h("span", {}, "Open"),
             )
           : null,
+        block.name === "use_app" && (block.status === "done" || block.status === "running")
+          ? h(
+              "button",
+              { class: "btn btn-ghost btn-sm ai-tool-view", type: "button", title: "Show the app", onClick: () => showApp(block) },
+              iconSvg("external", 13),
+              h("span", {}, "Show"),
+            )
+          : null,
         viewable(block)
           ? h(
               "a",
@@ -1724,7 +1803,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         h(
           "a",
           { class: "ai-tool-shot", href: fileUrl(block.image.id), target: "_blank", rel: "noopener", title: "Open the screenshot" },
-          picture(fileUrl(block.image.id), `The page after: ${arg}`),
+          picture(fileUrl(block.image.id), block.name === "use_app" ? `The window: ${arg}` : `The page after: ${arg}`),
         ),
       );
     }
@@ -1961,6 +2040,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     }),
     realtime.on<MessageEvent>("ai.message", (event) => {
       hear(event.message.id);
+      runAppCalls(event.conversationId, event.message);
       const listed = conversations.find((c) => c.id === event.conversationId);
       const waiting = event.message.role === "assistant" ? event.message.status === "waiting" : listed?.waiting;
       if (listed && (listed.running !== event.running || listed.waiting !== waiting)) {

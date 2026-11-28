@@ -9,14 +9,22 @@ they want and each updates on its own.
 
 RAST shows the app's `web/index.html` as a web page window: a frame sandboxed
 in an origin of its own, which reaches nothing of RAST (no session, no API)
-and keeps no storage between visits. Files open from the person's device and
-save as downloads.
+and keeps no storage between visits.
+
+From RAST 0.9.20 the page comes with RAST's bridge script, which runs an app
+that follows ArtCraft's Craft web host contract in its same-document host
+mode: the window opens the person's RAST file in it, Save writes the file
+back, Save As and exports ask for a folder, and the app's page command API
+answers other apps (AI Agent's `use_app`). `crafts.json` says what each
+packaged build carries: `files` (the host mode: documents from RAST, with
+`opens` for File Station's "Open with") and `commands` (the page command
+API). The others open files from the person's device and save downloads.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `crafts.json` | The apps: package id, name, upstream repository and the version packaged |
+| `crafts.json` | The apps: package id, name, upstream repository, the version packaged, and what its build carries (`files`, `opens`, `commands`) |
 | `artcraft-release-signing-key.asc` | ArtCraft's release signing key, pinned (fingerprint in `crafts.json`) |
 | `package.py` | `check`, `build <package> <out>`, `catalog-entries <minRastVersion>` |
 | `../../icons/<package>.png` | Each app's own 128 px icon, from its repository |

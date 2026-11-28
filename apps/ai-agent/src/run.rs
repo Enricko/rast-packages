@@ -164,6 +164,8 @@ pub struct Runs {
     /// Held while answering tool requests, sending, or stopping a waiting
     /// reply: one change to a waiting reply at a time.
     pub decide: tokio::sync::Mutex<()>,
+    /// `use_app` calls waiting for the person's page.
+    pub pages: super::use_app::Pages,
 }
 
 impl Runs {
@@ -409,7 +411,7 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
                     for call in &calls {
                         let status = if !job.tools.has(&call.name) {
                             "error"
-                        } else if !tools::asks_first(&call.name)
+                        } else if !tools::asks_first(&call.name, &call.input)
                             || (tools::may_skip_asking(&call.name)
                                 && job.allowed_tools.iter().any(|t| t == &call.name))
                         {
@@ -502,17 +504,34 @@ async fn run_allowed_tools(
                 at,
                 s.blocks[at]["name"].as_str().unwrap_or("").to_string(),
                 s.blocks[at]["input"].clone(),
+                s.blocks[at]["id"].as_str().unwrap_or("").to_string(),
             ))
         });
-        let Some((at, name, input)) = next else {
+        let Some((at, name, input, call_id)) = next else {
             return true;
         };
+        // A call the person's page runs waits for its answer from now on: the
+        // page may answer as soon as it sees the call running.
+        let page = (name == tools::USE_APP && job.tools.has(tools::USE_APP)).then(|| {
+            state
+                .ai
+                .pages
+                .wait(&job.conversation_id, &call_id, job.owner.id)
+        });
         progress(state, run, job, tokens).await;
         let outcome = tokio::select! {
             biased;
             _ = run.stopped.notified() => None,
-            result = tools::execute(state, &job.owner, &job.tools, &job.conversation_id, &name, &input) => Some(result),
+            result = async {
+                match page {
+                    Some(answer) => super::use_app::run(state, &job.owner, &job.tools, &job.conversation_id, &input, answer).await,
+                    None => tools::execute(state, &job.owner, &job.tools, &job.conversation_id, &name, &input).await,
+                }
+            } => Some(result),
         };
+        if name == tools::USE_APP {
+            state.ai.pages.forget(&job.conversation_id, &call_id);
+        }
         let stopped = outcome.is_none();
         let failed = !matches!(outcome, Some(Ok(_)));
         run.with(|s| {

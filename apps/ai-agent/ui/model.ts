@@ -776,7 +776,16 @@ export const TOOL_INFO: Record<string, { label: string; doing: string; arg: stri
   browser: { label: "Use the browser", doing: "Browsing", arg: "action", icon: "browser" },
   artifact: { label: "Artifact", doing: "Writing", arg: "title", icon: "compose" },
   open_app: { label: "Open an app", doing: "Opening", arg: "app", icon: "apps" },
+  use_app: { label: "Work in an app", doing: "Working in", arg: "app", icon: "apps" },
 };
+
+/** What a `use_app` call asks of an app's window: its control method and parameters. */
+export function useAppCall(block: Pick<ToolBlock, "name" | "input">): { app: string; method: string; params: Record<string, unknown> } | null {
+  if (block.name !== "use_app" || !block.input || typeof block.input !== "object") return null;
+  const { app, method, params } = block.input;
+  if (typeof app !== "string" || !app || typeof method !== "string" || !method) return null;
+  return { app, method, params: params && typeof params === "object" && !Array.isArray(params) ? (params as Record<string, unknown>) : {} };
+}
 
 /** What an `open_app` call opens: the app and its parameters (`{ path, line }`). */
 export function openAppTarget(block: Pick<ToolBlock, "name" | "input">): { app: string; params: { path?: string; line?: number } } | null {
@@ -911,6 +920,11 @@ export function toolArgument(block: Pick<ToolBlock, "name" | "input">, appName: 
     const { path, line } = opens.params;
     return path ? `${appName(opens.app)} · ${path}${line ? `:${line}` : ""}` : appName(opens.app);
   }
+  const uses = useAppCall(block);
+  if (uses) {
+    const command = uses.method === "engine.execute" && typeof uses.params.command === "string" ? uses.params.command : "";
+    return `${appName(uses.app)} · ${command || uses.method}`;
+  }
   if (block.name === "browser" && block.input) return browserStep(block.input);
   const value = block.input?.[key];
   return typeof value === "string" ? value : JSON.stringify(block.input ?? {});
@@ -947,8 +961,8 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
   { id: "ask", label: "Ask every time", short: "Asks first", hint: "Every step on your files or the web waits for you", tools: [] },
   { id: "read", label: "Allow reading files", short: "Reads freely", hint: "Lists, reads and searches your files and the server's without asking", tools: READ_TOOLS },
   { id: "edit", label: "Allow file changes", short: "Edits freely", hint: "Also writes files and makes folders without asking", tools: EDIT_TOOLS },
-  { id: "act", label: "Allow files and the web", short: "Acts freely", hint: "Also searches the web, opens pages and uses the browser without asking", tools: [...EDIT_TOOLS, "web_search", "fetch_url", "browser"] },
-  { id: "all", label: "Allow everything", short: "Runs freely", hint: "Also runs commands without asking", tools: [...EDIT_TOOLS, "web_search", "fetch_url", "browser", "run_command"] },
+  { id: "act", label: "Allow files, the web and apps", short: "Acts freely", hint: "Also searches the web, uses the browser and works in apps without asking", tools: [...EDIT_TOOLS, "web_search", "fetch_url", "browser", "use_app"] },
+  { id: "all", label: "Allow everything", short: "Runs freely", hint: "Also runs commands without asking", tools: [...EDIT_TOOLS, "web_search", "fetch_url", "browser", "use_app", "run_command"] },
 ];
 
 /** The preset a chat's allowed tools match, or null (allowed one by one). */

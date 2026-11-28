@@ -9,7 +9,7 @@
 
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post, put},
@@ -75,6 +75,11 @@ pub fn routes() -> Router<Agent> {
         .route(
             "/api/ai/conversations/{id}/tools/{call_id}",
             post(decide_tool),
+        )
+        // A picture of an app's window comes as base64.
+        .route(
+            "/api/ai/conversations/{id}/tools/{call_id}/answer",
+            post(answer_tool).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/api/ai/search", get(get_search).put(put_search))
         .route("/api/ai/search/test", post(test_search))
@@ -1743,6 +1748,36 @@ struct ToolDecision {
     /// chat (not the shell).
     #[serde(default)]
     always: bool,
+}
+
+#[derive(Deserialize)]
+struct PageAnswer {
+    ok: bool,
+    #[serde(default)]
+    result: Value,
+    #[serde(default)]
+    error: String,
+}
+
+/// POST /api/ai/conversations/{id}/tools/{callId}/answer — the owner's page
+/// ran a `use_app` call in the app's window: `{ok, result}` or
+/// `{ok: false, error}` (see [`ai::use_app`]).
+async fn answer_tool(
+    State(state): State<Agent>,
+    user: AuthUser,
+    Path((id, call_id)): Path<(String, String)>,
+    Json(body): Json<PageAnswer>,
+) -> AppResult<Json<Value>> {
+    let conversation = owned(&state, &user, &id, true).await?;
+    let answer = ai::use_app::answer_of(body.ok, body.result, &body.error);
+    if !state
+        .ai
+        .pages
+        .answer(&conversation.id, &call_id, user.id, answer)
+    {
+        return Err(AppError::conflict("no call waits for that answer"));
+    }
+    Ok(Json(json!({ "taken": true })))
 }
 
 /// POST /api/ai/conversations/{id}/tools/{callId} — the owner's answer to a

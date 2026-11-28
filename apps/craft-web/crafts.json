@@ -28,7 +28,12 @@
       "defaultSize": {
         "w": 1180,
         "h": 820
-      }
+      },
+      "files": true,
+      "commands": true,
+      "opens": [
+        ".pdf"
+      ]
     },
     {
       "package": "filmcraft",
@@ -40,7 +45,12 @@
       "defaultSize": {
         "w": 1280,
         "h": 820
-      }
+      },
+      "files": true,
+      "commands": true,
+      "opens": [
+        ".fcproj"
+      ]
     },
     {
       "package": "wordcraft",
@@ -52,7 +62,18 @@
       "defaultSize": {
         "w": 1100,
         "h": 800
-      }
+      },
+      "files": true,
+      "commands": true,
+      "opens": [
+        ".docx",
+        ".doc",
+        ".dotx",
+        ".odt",
+        ".rtf",
+        ".md",
+        ".tex"
+      ]
     },
     {
       "package": "lightcraft",
@@ -64,7 +85,8 @@
       "defaultSize": {
         "w": 1280,
         "h": 820
-      }
+      },
+      "files": true
     },
     {
       "package": "vectorcraft",
@@ -76,7 +98,8 @@
       "defaultSize": {
         "w": 1280,
         "h": 820
-      }
+      },
+      "commands": true
     },
     {
       "package": "effectcraft",
@@ -100,7 +123,12 @@
       "defaultSize": {
         "w": 1280,
         "h": 820
-      }
+      },
+      "files": true,
+      "commands": true,
+      "opens": [
+        ".dxf"
+      ]
     },
     {
       "package": "gridcraft",
@@ -112,7 +140,13 @@
       "defaultSize": {
         "w": 1200,
         "h": 800
-      }
+      },
+      "files": true,
+      "commands": true,
+      "opens": [
+        ".xlsx",
+        ".csv"
+      ]
     },
     {
       "package": "figcraft",
@@ -124,7 +158,13 @@
       "defaultSize": {
         "w": 1280,
         "h": 820
-      }
+      },
+      "files": true,
+      "commands": true,
+      "opens": [
+        ".figcraft",
+        ".fig"
+      ]
     },
     {
       "package": "designcraft",
@@ -148,7 +188,15 @@
       "defaultSize": {
         "w": 1200,
         "h": 800
-      }
+      },
+      "files": true,
+      "commands": true,
+      "opens": [
+        ".pptx",
+        ".ppt",
+        ".pps",
+        ".pot"
+      ]
     },
     {
       "package": "soundcraft",

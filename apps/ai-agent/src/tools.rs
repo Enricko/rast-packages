@@ -22,6 +22,9 @@
 //!   Editor at a file and line, File Station at a folder, …); the page that
 //!   started the reply opens the window. It reads and changes nothing, so it
 //!   never asks first.
+//! * `use_app`: works inside an app whose window takes commands (the Craft
+//!   apps): the person's page runs the call in the window (see
+//!   [`super::use_app`]); reading asks nothing, acting asks first.
 
 use std::{
     io::Read,
@@ -53,9 +56,10 @@ pub const FETCH_URL: &str = "fetch_url";
 pub const BROWSER: &str = "browser";
 pub const ARTIFACT: &str = "artifact";
 pub const OPEN_APP: &str = "open_app";
+pub const USE_APP: &str = "use_app";
 
 /// Every tool, in the order agents' settings list them.
-pub const ALL: [&str; 13] = [
+pub const ALL: [&str; 14] = [
     LIST_FILES,
     READ_FILE,
     SEARCH_FILES,
@@ -69,6 +73,7 @@ pub const ALL: [&str; 13] = [
     BROWSER,
     ARTIFACT,
     OPEN_APP,
+    USE_APP,
 ];
 
 /// Kinds of artifact (see [`ARTIFACT`]).
@@ -122,10 +127,15 @@ pub fn is_tool(name: &str) -> bool {
 }
 
 /// Whether a call waits for its owner first: every tool that reads or
-/// changes something does; an artifact only shows what the model wrote, and
-/// opening an app only opens a window.
-pub fn asks_first(name: &str) -> bool {
-    name != ARTIFACT && name != OPEN_APP
+/// changes something does; an artifact only shows what the model wrote,
+/// opening an app only opens a window, and reading what an app shows
+/// (`use_app` with a reading method) is what the person sees anyway.
+pub fn asks_first(name: &str, input: &Value) -> bool {
+    match name {
+        ARTIFACT | OPEN_APP => false,
+        USE_APP => !super::use_app::reads(input),
+        _ => true,
+    }
 }
 
 /// Whether the owner may let the tool run without asking in a chat: every
@@ -215,6 +225,8 @@ impl Available {
             .filter_map(|name| {
                 if *name == OPEN_APP {
                     open_app_spec(&self.apps)
+                } else if *name == USE_APP {
+                    super::use_app::spec(&self.apps)
                 } else {
                     spec(name, self.shell, self.guarded)
                 }
@@ -265,6 +277,9 @@ pub async fn available(state: &Agent, user: &AuthUser) -> Available {
     if !out.apps.is_empty() {
         out.names.push(OPEN_APP);
     }
+    if out.apps.iter().any(|app| app.commands) {
+        out.names.push(USE_APP);
+    }
     out
 }
 
@@ -287,6 +302,9 @@ pub fn open_app_spec(apps: &[super::host::HostApp]) -> Option<ToolSpec> {
                     app.opens.join(", ")
                 )),
                 _ => {}
+            }
+            if app.commands {
+                line.push_str(". Work in it with use_app");
             }
             line
         })
@@ -456,6 +474,14 @@ pub fn open_app(available: &Available, input: &Value) -> Result<String, String> 
         .map(str::trim)
         .filter(|path| !path.is_empty());
     if let Some(path) = path {
+        // Only File Station and apps that open files take a path; another
+        // would open without it.
+        if app.id != "files" && app.opens.is_empty() {
+            return Err(format!(
+                "{} opens no file from a path: open it without one (the person opens files from its own File menu)",
+                app.name
+            ));
+        }
         if !path.starts_with('/') {
             return Err("give the path from the person's home folder, starting with '/'".into());
         }
@@ -572,6 +598,20 @@ pub fn summary(name: &str, input: &Value) -> String {
         let app = input.get("app").and_then(Value::as_str).unwrap_or("");
         let path = input.get("path").and_then(Value::as_str).unwrap_or("");
         let line: String = format!("{app} {path}").trim().chars().take(300).collect();
+        return format!("{name}: {line}");
+    }
+    if name == USE_APP {
+        let app = input.get("app").and_then(Value::as_str).unwrap_or("");
+        let method = input.get("method").and_then(Value::as_str).unwrap_or("");
+        let command = input
+            .pointer("/params/command")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let line: String = format!("{app} {method} {command}")
+            .trim()
+            .chars()
+            .take(300)
+            .collect();
         return format!("{name}: {line}");
     }
     let key = match name {
@@ -852,6 +892,7 @@ async fn run_tool(
                 .join("\n"))
         }
         OPEN_APP => open_app(available, input),
+        USE_APP => Err("use_app runs in the person's page".into()),
         ARTIFACT => {
             let artifact = check_artifact(input)?;
             Ok(format!(
@@ -1729,7 +1770,12 @@ mod tests {
         let big = "x".repeat(MAX_ARTIFACT_BYTES + 1);
         assert!(check_artifact(&json!({"kind": "code", "content": big})).is_err());
         assert_eq!(slug("--"), "artifact");
-        assert!(!asks_first(ARTIFACT) && asks_first(FETCH_URL) && asks_first(BROWSER));
+        let none = json!({});
+        assert!(
+            !asks_first(ARTIFACT, &none)
+                && asks_first(FETCH_URL, &none)
+                && asks_first(BROWSER, &none)
+        );
     }
 
     #[test]
@@ -1740,6 +1786,7 @@ mod tests {
             name: name.into(),
             description: format!("{name} does things."),
             opens: opens.iter().map(|o| o.to_string()).collect(),
+            commands: false,
         };
         let apps = vec![
             app("files", "File Station", &[]),
@@ -1757,7 +1804,7 @@ mod tests {
             spec.parameters["properties"]["app"]["enum"],
             json!(["files", "code"])
         );
-        assert!(!asks_first(OPEN_APP));
+        assert!(!asks_first(OPEN_APP, &json!({})));
 
         let available = Available {
             names: vec![OPEN_APP],
@@ -1782,6 +1829,27 @@ mod tests {
         assert!(open(json!({"app": "code", "line": 3}))
             .unwrap_err()
             .contains("needs the file's path"));
+
+        // An app that opens no files takes no path.
+        let mut photo = app("photocraft", "PhotoCraft", &[]);
+        photo.commands = true;
+        let available = Available {
+            names: vec![OPEN_APP],
+            apps: vec![photo.clone()],
+            ..Available::default()
+        };
+        assert!(
+            open_app(&available, &json!({"app": "photocraft", "path": "/a.png"}))
+                .unwrap_err()
+                .contains("PhotoCraft opens no file from a path")
+        );
+        assert_eq!(
+            open_app(&available, &json!({"app": "photocraft"})).unwrap(),
+            "PhotoCraft is open beside the chat."
+        );
+        assert!(open_app_spec(&[photo]).unwrap().description.contains(
+            "- photocraft (PhotoCraft): PhotoCraft does things. Work in it with use_app"
+        ));
         assert_eq!(
             summary(OPEN_APP, &json!({"app": "code", "path": "/a.py"})),
             "open_app: code /a.py"

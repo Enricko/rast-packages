@@ -53,6 +53,7 @@ import {
   maySkipAsking,
   messageText,
   toolArgument,
+  useAppCall,
   chatArtifacts,
   artifactFileName,
   artifactSlug,
@@ -205,6 +206,18 @@ test("tool cards show their main argument", () => {
   assert.equal(maySkipAsking("write_file"), true);
   assert.equal(maySkipAsking("run_command"), true);
   assert.equal(maySkipAsking("format_disk"), false);
+});
+
+test("work in an app shows the app and the command", () => {
+  const names = (id: string) => (id === "wordcraft" ? "WordCraft" : id);
+  const insert = { name: "use_app", input: { app: "wordcraft", method: "engine.execute", params: { command: "text.insert", params: { text: "Hi" } } } };
+  assert.equal(toolArgument(insert, names), "WordCraft · text.insert");
+  assert.equal(toolArgument({ name: "use_app", input: { app: "wordcraft", method: "document.inspect" } }, names), "WordCraft · document.inspect");
+  assert.deepEqual(useAppCall(insert), { app: "wordcraft", method: "engine.execute", params: { command: "text.insert", params: { text: "Hi" } } });
+  assert.deepEqual(useAppCall({ name: "use_app", input: { app: "wordcraft", method: "ui.inspect", params: [1] } }), { app: "wordcraft", method: "ui.inspect", params: {} });
+  assert.equal(useAppCall({ name: "use_app", input: { app: "wordcraft" } }), null);
+  assert.equal(useAppCall({ name: "open_app", input: { app: "wordcraft", method: "x.y" } }), null);
+  assert.equal(maySkipAsking("use_app"), true);
 });
 
 test("messages stay in id order", () => {

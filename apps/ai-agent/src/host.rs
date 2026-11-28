@@ -113,6 +113,9 @@ pub struct HostApp {
     /// Files its window opens (`text`, `image`, `pdf` or `.ext`).
     #[serde(default)]
     pub opens: Vec<String>,
+    /// Its window may answer other apps' requests (`use_app`; RAST 0.9.20).
+    #[serde(default)]
+    pub commands: bool,
 }
 
 /// RAST's built-in apps, for a RAST without `/v1/users/{id}/apps`.
@@ -305,6 +308,7 @@ impl Host {
                             name: name.into(),
                             description: String::new(),
                             opens: Vec::new(),
+                            commands: false,
                         });
                     }
                 }

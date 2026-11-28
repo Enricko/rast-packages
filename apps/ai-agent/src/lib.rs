@@ -44,6 +44,7 @@ pub mod provider;
 pub mod run;
 pub mod signin;
 pub mod tools;
+pub mod use_app;
 pub mod view;
 pub mod workspace;
 

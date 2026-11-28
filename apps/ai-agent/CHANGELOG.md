@@ -7,6 +7,33 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent works in apps.** A new `use_app` tool works inside an app
+  whose window takes commands (the Craft apps that carry ArtCraft's page
+  command API: WordCraft, PdfCraft, CADCraft, GridCraft, FigCraft,
+  DeckCraft, FilmCraft, VectorCraft): it lists and runs the app's commands,
+  reads the open document and the window's state, types, presses keys,
+  clicks and takes a picture of the window (shown in the chat). The call
+  runs in the person's page: the page that started the reply hands it to
+  the app's window (RAST 0.9.20's `ctx.desktop.request`, which opens the
+  app when needed) and posts the answer
+  (`POST /api/ai/conversations/{id}/tools/{callId}/answer`); the reply
+  waits up to 150 seconds. Reading asks nothing; typing, commands and
+  clicks ask first, like other tools that act ("Allow files, the web and
+  apps" and "Allow everything" include it). The model is offered it when
+  RAST's host API marks an app's window as taking commands.
+- Which chats a page started is kept for the browser tab, so after a
+  reload the page still opens the apps and runs the app work of its
+  replies.
+
+### Changed
+
+- `open_app` takes a path only for File Station and apps that open files
+  (`opens`); for another app it says the app opens no file from a path
+  instead of reporting the file open. The app list tells which apps
+  `use_app` works in.
+
 ## [1.7.0] - 2026-11-28
 
 ### Added
