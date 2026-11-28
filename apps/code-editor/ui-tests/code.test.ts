@@ -81,3 +81,33 @@ test("Ask AI hands over the selected lines in a code block, else the path", () =
   assert.equal(askText("/n.txt", "text", { text: "a ``` b", from: 2, to: 2 }), "About line 2 of my file /n.txt:\n````\na ``` b\n````\n\n");
   assert.equal(askText("/n.txt", "text", { text: "abcdef", from: 1, to: 1 }, 3), "About line 1 of my file /n.txt:\n```\nabc\n…\n```\n\n");
 });
+
+import { applyLineReplace, applyTextReplace, findInText, formatLines, listCommands } from "../src/apps/code/commands";
+
+test("Code Editor control-channel helpers format, find, and edit lines accurately", () => {
+  const sample = ["alpha", "beta", "gamma", "beta"].join("\n");
+  const lines = formatLines(sample, 2, 3);
+  assert.equal(lines.totalLines, 4);
+  assert.equal(lines.text, "2: beta\n3: gamma");
+
+  const r1 = applyTextReplace(sample, "beta", "BETA", false);
+  assert.equal(r1.count, 1);
+  assert.equal(r1.text, ["alpha", "BETA", "gamma", "beta"].join("\n"));
+
+  const r2 = applyTextReplace(sample, "beta", "BETA", true);
+  assert.equal(r2.count, 2);
+  assert.equal(r2.text, ["alpha", "BETA", "gamma", "BETA"].join("\n"));
+
+  const lr = applyLineReplace(sample, 2, 3, "two\nthree\nfour");
+  assert.equal(lr.totalLines, 5);
+  assert.equal(lr.text, ["alpha", "two", "three", "four", "beta"].join("\n"));
+
+  assert.deepEqual(findInText(sample, "BETA"), [
+    { line: 2, text: "beta" },
+    { line: 4, text: "beta" },
+  ]);
+
+  assert.ok(listCommands("replace", true).some((c) => c.id === "editor.replace" && c.enabled));
+  assert.ok(listCommands("open", false).some((c) => c.id === "file.open" && c.enabled));
+  assert.ok(listCommands("replace", false).some((c) => c.id === "editor.replace" && !c.enabled));
+});

@@ -37,7 +37,12 @@ export interface FileBlock {
   size: number;
 }
 
-export type ContentBlock = WordsBlock | ToolBlock | FileBlock;
+export interface CompactBlock {
+  type: "compact";
+  text: string;
+}
+
+export type ContentBlock = WordsBlock | ToolBlock | FileBlock | CompactBlock;
 
 /** The largest file and how many files go with one message. */
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -276,7 +281,15 @@ export interface Options {
   configured: boolean;
   providers: PublicProvider[];
   agents: PublicAgent[];
+  skills?: PublicSkill[];
   allowance: Allowance;
+}
+
+export interface PublicSkill {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
 }
 
 export interface DeltaEvent {

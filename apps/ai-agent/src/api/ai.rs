@@ -68,6 +68,7 @@ pub fn routes() -> Router<Agent> {
         .route("/api/ai/view/converted/{id}", get(converted_document))
         .route("/api/ai/conversations/{id}/stop", post(stop_reply))
         .route("/api/ai/conversations/{id}/retry", post(retry_now))
+        .route("/api/ai/conversations/{id}/compact", post(compact_conversation))
         .route(
             "/api/ai/conversations/{id}/artifacts/{call_id}",
             get(get_artifact),
@@ -332,6 +333,11 @@ async fn options(State(state): State<Agent>, user: AuthUser) -> AppResult<Json<V
         })
         .map(|a| a.public_json())
         .collect();
+    let skills: Vec<Value> = ai::skills(&state.db)
+        .await?
+        .iter()
+        .map(ai::Skill::public_json)
+        .collect();
     let configured: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_providers")
         .fetch_one(&state.db)
         .await?;
@@ -343,6 +349,7 @@ async fn options(State(state): State<Agent>, user: AuthUser) -> AppResult<Json<V
         "configured": configured > 0,
         "providers": providers.iter().map(ai::Provider::public_json).collect::<Vec<_>>(),
         "agents": agents,
+        "skills": skills,
         "allowance": ai::allowance(&state.db, user.id, &limits).await?,
     })))
 }
@@ -1510,6 +1517,21 @@ async fn reply_job(
     if let Some(scope) = &available.workspace {
         system.push_str(&ai::workspace::context(state, user, scope, &available).await);
     }
+    if let Some(latest_user) = earlier.iter().rev().find(|m| m.role == "user") {
+        let latest_text = ai::text_of(&latest_user.content);
+        let addendum = ai::directives::build_addendum(
+            state,
+            user,
+            &latest_text,
+            &all_skills,
+            &skills,
+            &available,
+        )
+        .await;
+        if !addendum.is_empty() {
+            system.push_str(&addendum);
+        }
+    }
     let mut messages = ai::history(&earlier);
     ai::files::load(state.data_dir(), conversation.user_id, &mut messages).await;
     let request = provider::ChatRequest {
@@ -1704,6 +1726,110 @@ async fn send_message(
         "conversation": conversation_json,
         "message": sent,
         "reply": reply,
+    })))
+}
+
+/// POST /api/ai/conversations/{id}/compact — summarize earlier turns into a
+/// compact checkpoint so the next messages run with a fresh context window.
+async fn compact_conversation(
+    State(state): State<Agent>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> AppResult<Json<Value>> {
+    let _deciding = state.ai.decide.lock().await;
+    let mut conversation = owned(&state, &user, &id, true).await?;
+    if state.ai.running(&conversation.id) {
+        return Err(AppError::conflict(
+            "a reply is still being written; stop it or wait before compacting",
+        ));
+    }
+    let prepared = prepare(&state, &user, &conversation).await?;
+    let all_messages = ai::messages(&state.db, &conversation.id).await?;
+    // Only compact messages since the last compaction checkpoint.
+    let start = all_messages
+        .iter()
+        .rposition(|m| ai::directives::compact_summary(&m.content).is_some())
+        .unwrap_or(0);
+    let to_compact = all_messages[start..].to_vec();
+    if to_compact.len() < 2 {
+        return Err(AppError::bad_request(
+            "not enough messages to compact yet",
+        ));
+    }
+    let base_request = ai::provider::ChatRequest {
+        kind: prepared.resolved.provider.kind,
+        base_url: prepared.resolved.provider.effective_base_url(),
+        api_key: prepared.api_key.clone(),
+        model: prepared.resolved.model.clone(),
+        system: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+        temperature: None,
+        max_output_tokens: None,
+        effort: Some(ai::Effort::Low),
+        session: conversation.id.clone(),
+        account: prepared.account.clone(),
+    };
+    let (summary, usage) = tokio::task::spawn_blocking(move || {
+        ai::directives::summarize_for_compact(&base_request, &to_compact)
+    })
+    .await
+    .map_err(|_| AppError::internal("compaction task failed"))?
+    .map_err(AppError::bad_request)?;
+
+    let estimate = ai::record_usage(
+        &state.db,
+        user.id,
+        &prepared.resolved.provider.id,
+        &prepared.account_id,
+        &prepared.resolved.model,
+        &usage,
+    )
+    .await
+    .unwrap_or(0);
+
+    let now = now_ms();
+    let content = json!([{ "type": "compact", "text": summary }]);
+    let msg_id: i64 = sqlx::query_scalar(
+        "INSERT INTO ai_messages (conversation_id, role, content, provider_id, model, input_tokens, output_tokens, estimated_cost, status, created_at, finished_at)
+         VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, 'done', ?, ?) RETURNING id",
+    )
+    .bind(&conversation.id)
+    .bind(content.to_string())
+    .bind(&prepared.resolved.provider.id)
+    .bind(&prepared.resolved.model)
+    .bind(usage.input)
+    .bind(usage.output)
+    .bind(estimate)
+    .bind(now)
+    .bind(now)
+    .fetch_one(&state.db)
+    .await?;
+
+    conversation.updated_at = now;
+    sqlx::query("UPDATE ai_conversations SET updated_at = ? WHERE id = ?")
+        .bind(now)
+        .bind(&conversation.id)
+        .execute(&state.db)
+        .await?;
+
+    let msg = ai::message(&state.db, msg_id).await?.map(|m| m.json());
+    let conv_json = conversation.json(None, false);
+    if let Some(m) = &msg {
+        state.host.publish_user_and_admin(
+            "ai.message",
+            user.id,
+            json!({"conversationId": conversation.id, "message": m, "running": false}),
+        );
+    }
+    state.host.publish_user_and_admin(
+        "ai.conversation",
+        user.id,
+        json!({ "conversation": conversation.json(Some(&user.username), false) }),
+    );
+    Ok(Json(json!({
+        "conversation": conv_json,
+        "message": msg,
     })))
 }
 

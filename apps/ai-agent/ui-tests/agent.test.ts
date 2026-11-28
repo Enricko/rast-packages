@@ -780,3 +780,25 @@ test("the provider's limits show as bars, reported or counted", () => {
   );
 });
 
+
+import { applyTrigger, findTrigger, formatFileMention } from "../src/apps/agent/suggest";
+
+test("composer triggers detect leading slash commands and inline @ mentions", () => {
+  assert.deepEqual(findTrigger("/pl", 3), { kind: "slash", start: 0, end: 3, query: "pl" });
+  assert.deepEqual(findTrigger("/plan /co", 9), { kind: "slash", start: 6, end: 9, query: "co" });
+  // Slash in the middle of normal text (like a path) does not open the slash menu.
+  assert.equal(findTrigger("check /etc/hosts", 16), null);
+
+  assert.deepEqual(findTrigger("use @co", 7), { kind: "mention", start: 4, end: 7, query: "co" });
+  assert.deepEqual(findTrigger("read @file:src/ap", 17), { kind: "file", start: 5, end: 17, query: "src/ap" });
+  assert.deepEqual(findTrigger("see @chat:abc", 13), { kind: "chat", start: 4, end: 13, query: "abc" });
+  // Emails never trigger mentions.
+  assert.equal(findTrigger("mail admin@example.com", 16), null);
+
+  assert.deepEqual(applyTrigger("use @co now", { start: 4, end: 7 }, "@code "), {
+    value: "use @code  now",
+    caret: 10,
+  });
+  assert.equal(formatFileMention("/docs/a.md"), "@file:/docs/a.md ");
+  assert.equal(formatFileMention("/docs/My File.md"), '@file:"/docs/My File.md" ');
+});

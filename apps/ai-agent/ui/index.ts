@@ -21,6 +21,7 @@ import { badgeOf, folderOf, isWebUrl, kindLabel, looksLikePath, viewOfChatFile, 
 import { createFileView } from "./viewer";
 import { createModelMenu } from "./modelmenu";
 import { createUsageBar } from "./usagebar";
+import { createComposerSuggest } from "./suggest";
 import { createWorkspaces, placeText } from "./workspaces";
 import { formatEstimate } from "./usage";
 import { renderMarkdown } from "./markdown";
@@ -322,7 +323,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   const input = h("textarea", {
     class: "ai-input",
     rows: 1,
-    placeholder: "Message",
+    placeholder: "Message — type / for commands & skills, @ for apps & files",
     ariaLabel: "Message",
     spellcheck: true,
   });
@@ -382,19 +383,31 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     providerId: () => answering().providerId,
     model: () => answering().model,
   });
-  const composer = h(
+  const inputWrap = h(
     "div",
-    { class: "ai-composer" },
-    composerNote,
-    h(
-      "div",
-      { class: "ai-input-wrap" },
-      attachments.tray,
-      input,
-      h("div", { class: "ai-composer-bar" }, attachments.button, wsChip, modelMenu.button, guard, sendButton),
-    ),
-    usage.el,
+    { class: "ai-input-wrap" },
+    attachments.tray,
+    input,
+    h("div", { class: "ai-composer-bar" }, attachments.button, wsChip, modelMenu.button, guard, sendButton),
   );
+  const suggest = createComposerSuggest({
+    ctx,
+    input,
+    anchor: inputWrap,
+    skills: () => options?.skills ?? [],
+    conversations: () => conversations,
+    currentConversationId: () => current?.conversation.id ?? null,
+    workspace: () => {
+      const id = chatWorkspace();
+      return id ? (workspaces.byId(id) ?? null) : null;
+    },
+    onCompact: () => void compactNow(),
+    onChange: () => {
+      autoGrow();
+      updateComposer();
+    },
+  });
+  const composer = h("div", { class: "ai-composer" }, composerNote, inputWrap, usage.el);
   const dropHint = h("div", { class: "ai-drop-hint", ariaHidden: true }, iconSvg("attach", 22), h("span", {}, "Drop files to add them"));
   const main = h("section", { class: "ai-main" }, head, scrollArea, composer, dropHint);
   const settingsHost = h("section", { class: "ai-settings hidden" });
@@ -784,6 +797,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     input.focus();
   });
   input.addEventListener("keydown", (event) => {
+    if (suggest.onKeyDown(event)) return;
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       void send();
@@ -807,6 +821,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         ? { label: "Unpin", icon: "unpin", onClick: () => void pin(conversation, false) }
         : { label: "Pin to top", icon: "pin", onClick: () => void pin(conversation, true) },
       { label: "Rename", icon: "rename", onClick: () => void rename(conversation) },
+      { label: "Compact chat", icon: "layers", onClick: () => void compactNow() },
       { label: "Copy chat", icon: "copy", onClick: () => void copyChat() },
       "separator",
       { label: "Delete", icon: "trash", danger: true, onClick: () => void remove(conversation) },
@@ -942,10 +957,45 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     return heard.get(id) ?? 0;
   }
 
+  async function compactNow(): Promise<void> {
+    if (!current || current.readOnly || current.conversation.running) {
+      ctx.toast.warning(current ? "Wait for the current reply to finish before compacting." : "Start a conversation first before compacting.");
+      return;
+    }
+    const id = current.conversation.id;
+    sendButton.disabled = true;
+    composerNote.textContent = "Compacting conversation…";
+    try {
+      const res = await ctx.api.post<{ conversation: Conversation; message?: Message }>(
+        `/api/ai/conversations/${encodeURIComponent(id)}/compact`,
+      );
+      if (current?.conversation.id === id) {
+        current.conversation = res.conversation;
+        if (res.message) upsertMessage(current.messages, res.message);
+      }
+      upsertConversation(res.conversation);
+      renderAll(false);
+      followLatest();
+      ctx.toast.success("Conversation compacted.");
+    } catch (error) {
+      ctx.toast.error(errorMessage(error));
+    } finally {
+      sendButton.disabled = false;
+      updateComposer();
+    }
+  }
+
   async function send(): Promise<void> {
     const text = input.value.trim();
     const files = attachments.ready();
     if ((!text && !files.length) || current?.readOnly || current?.conversation.running) return;
+    if (text === "/compact" && files.length === 0) {
+      input.value = "";
+      autoGrow();
+      suggest.close();
+      await compactNow();
+      return;
+    }
     if (attachments.busy()) {
       ctx.toast.warning("Files are still uploading; they send once they are ready.");
       return;
@@ -1640,6 +1690,28 @@ function mountAgentApp(ctx: AppContext): AppInstance {
             return details;
           }),
         );
+      } else if (block.type === "compact") {
+        const key = `compact:${index}`;
+        parts.push(
+          reuse(index, sig, () => {
+            const details = h("details", { class: "ai-compact", dataset: { key } });
+            details.open = opened.get(key) ?? false;
+            const md = h("div", { class: "ai-md ai-compact-body" });
+            renderMarkdown(md, block.text, {
+              onCopy: (code) => void copyText(code).then((ok) => ok && ctx.toast.success("Code copied.")),
+            });
+            details.append(
+              h(
+                "summary",
+                {},
+                iconSvg("layers", 14),
+                h("span", { class: "ai-compact-label" }, "Conversation compacted — context window refreshed"),
+              ),
+              md,
+            );
+            return details;
+          }),
+        );
       } else if (block.type === "text") {
         if (!block.text) return;
         parts.push(
@@ -2177,6 +2249,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     disposed = true;
     window.clearInterval(ticker);
     document.removeEventListener("keydown", typeToCompose);
+      suggest.dispose();
     attachments.clear();
     followObserver.disconnect();
     for (const unsubscribe of unsubscribers.splice(0)) unsubscribe();

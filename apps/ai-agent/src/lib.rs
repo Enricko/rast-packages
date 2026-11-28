@@ -37,6 +37,7 @@ pub mod app_window;
 pub mod browser;
 pub mod context;
 pub mod convert;
+pub mod directives;
 pub mod files;
 pub mod guard;
 pub mod host;
@@ -785,6 +786,18 @@ pub struct Skill {
     pub instructions: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+impl Skill {
+    /// For composer autocomplete: id, slash slug, name and short description.
+    pub fn public_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "slug": directives::skill_slug(&self.name),
+            "name": self.name,
+            "description": self.description,
+        })
+    }
 }
 
 fn skill_from_row(row: &sqlx::sqlite::SqliteRow) -> Skill {
@@ -1986,6 +1999,18 @@ pub fn history(messages: &[Message]) -> Vec<provider::Turn> {
     let mut picked: Vec<Vec<provider::Turn>> = Vec::new();
     let mut chars = 0usize;
     for message in messages.iter().rev() {
+        if let Some(summary) = directives::compact_summary(&message.content) {
+            let text = format!(
+                "[Compacted conversation summary — earlier turns were condensed into this context]
+
+{summary}"
+            );
+            picked.push(vec![provider::Turn::User(provider::UserTurn {
+                text,
+                files: Vec::new(),
+            })]);
+            break;
+        }
         let turns = if message.role == "assistant" {
             let used_tools = message
                 .content
@@ -2089,6 +2114,13 @@ pub fn system_prompt(
             prompt.push_str(
                 "\n\nThe server's own files can be read but not changed, apart from private places and \
                  secrets. Do not try to get around what is hidden or refused.",
+            );
+        }
+        if tools.has(tools::USE_APP) && !tools.apps.is_empty() {
+            prompt.push_str(
+                "\n\n# Installed Apps\n\nYou can operate every installed RAST app directly with `open_app` and `use_app`. \
+                 Choose the right app for the task (for example, use Code Editor (`code`) as a live coding agent with `engine.execute` commands `file.open`, `file.create`, `editor.read`, `editor.replace`, `editor.replaceLines`, `editor.setContent`, `file.save`; use WordCraft (`wordcraft`) for documents; use other installed Craft/RAST apps for spreadsheets, decks, images, files, Docker, and system management). \
+                 Always save your work in the app when finishing.",
             );
         }
     }

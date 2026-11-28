@@ -18,6 +18,7 @@ import { dropDraft, moveDraft, readDraft, writeDraft } from "./drafts";
 import { fileExtensions, indentExtension, indentSlot, languageSlot, wrapSlot } from "./editor";
 import { languageExtension } from "./languages";
 import { askText, baseName, detectIndent, isInside, joinPath, languageChoices, languageOf, lineEnding, parentOf, relativeTo, validName, type LanguageId } from "./paths";
+import { applyLineReplace, applyTextReplace, findInText, formatLines, listCommands } from "./commands";
 import { createTree, type TreeEntry } from "./tree";
 
 /** The largest file opened (RAST's text reads stop at 4 MiB). */
@@ -999,6 +1000,175 @@ export function mountCodeEditor(ctx: AppContext): AppInstance {
 
   ctx.onReopen((params) => void place(params, true));
   ctx.onPlace((params) => void place(params, false));
+
+  // ---- control channel for AI Agent (`use_app`)
+  function tabText(tab: Tab): string {
+    return (tab === active ? view.state : tab.state).doc.toString();
+  }
+
+  async function resolveTab(path?: unknown): Promise<Tab> {
+    if (typeof path === "string" && path.startsWith("/")) {
+      await openFile(path);
+    }
+    if (!active) throw new Error("No file is open in Code Editor. Open a file with file.open first.");
+    return active;
+  }
+
+  function applyBufferEdit(tab: Tab, nextText: string): void {
+    if (tab.readOnly) throw new Error(tab.readOnlyWhy || `${tab.path} is read-only.`);
+    if (tab === active) {
+      const len = view.state.doc.length;
+      view.dispatch({ changes: { from: 0, to: len, insert: nextText } });
+    } else {
+      tab.state = tab.state.update({ changes: { from: 0, to: tab.state.doc.length, insert: nextText } }).state;
+      tab.dirty = tab.state.doc.toString() !== tab.saved;
+      drawTab(tab);
+      updateSave();
+    }
+  }
+
+  ctx.onRequest(async (method, rawParams) => {
+    const p = (rawParams && typeof rawParams === "object" ? rawParams : {}) as Record<string, unknown>;
+    if (method === "engine.commands") {
+      const search = typeof p.search === "string" ? p.search : undefined;
+      return { commands: listCommands(search, Boolean(active)) };
+    }
+    if (method === "document.inspect") {
+      const includeText = p.text !== false;
+      const fromLine = typeof p.fromLine === "number" ? p.fromLine : undefined;
+      const toLine = typeof p.toLine === "number" ? p.toLine : undefined;
+      const openTabs = tabs.map((t) => ({
+        path: t.path,
+        language: t.language,
+        dirty: t.dirty,
+        readOnly: t.readOnly,
+        lines: (t === active ? view.state : t.state).doc.lines,
+        active: t === active,
+      }));
+      if (!active) {
+        return { root: tree.root(), tabs: openTabs, active: null };
+      }
+      const head = view.state.selection.main.head;
+      const lineObj = view.state.doc.lineAt(head);
+      const body = tabText(active);
+      return {
+        root: tree.root(),
+        tabs: openTabs,
+        active: {
+          path: active.path,
+          language: active.language,
+          dirty: active.dirty,
+          readOnly: active.readOnly,
+          cursor: { line: lineObj.number, column: head - lineObj.from + 1 },
+          ...(includeText ? formatLines(body, fromLine, toLine) : { totalLines: view.state.doc.lines }),
+        },
+      };
+    }
+    if (method === "engine.execute") {
+      const command = typeof p.command === "string" ? p.command : "";
+      const args = (p.params && typeof p.params === "object" ? p.params : {}) as Record<string, unknown>;
+      switch (command) {
+        case "file.open": {
+          const path = typeof args.path === "string" ? args.path : "";
+          if (!path.startsWith("/")) throw new Error("file.open requires an absolute path starting with '/'.");
+          const line = typeof args.line === "number" ? args.line : undefined;
+          await openFile(path, line);
+          return { opened: path, line: line ?? 1, lines: active ? view.state.doc.lines : 0 };
+        }
+        case "file.create": {
+          const path = typeof args.path === "string" ? args.path : "";
+          if (!path.startsWith("/")) throw new Error("file.create requires an absolute path starting with '/'.");
+          const content = typeof args.content === "string" ? args.content : "";
+          await writeFile(path, content);
+          await openFile(path);
+          return { created: path, bytes: content.length };
+        }
+        case "file.save": {
+          const tab = await resolveTab(args.path);
+          const ok = await save_(tab);
+          if (!ok) throw new Error(`Could not save ${tab.path}.`);
+          return { saved: tab.path };
+        }
+        case "file.saveAll": {
+          await saveAll();
+          return { saved: tabs.filter((t) => !t.dirty).map((t) => t.path) };
+        }
+        case "file.close": {
+          const tab = await resolveTab(args.path);
+          const path = tab.path;
+          const closed = await closeTab(tab);
+          return { closed, path };
+        }
+        case "folder.open": {
+          const path = typeof args.path === "string" ? args.path : "";
+          if (!path.startsWith("/")) throw new Error("folder.open requires an absolute path starting with '/'.");
+          await setRoot(path);
+          return { root: tree.root() };
+        }
+        case "editor.read": {
+          const tab = await resolveTab(args.path);
+          const fromLine = typeof args.fromLine === "number" ? args.fromLine : undefined;
+          const toLine = typeof args.toLine === "number" ? args.toLine : undefined;
+          return { path: tab.path, dirty: tab.dirty, ...formatLines(tabText(tab), fromLine, toLine) };
+        }
+        case "editor.replace": {
+          const tab = await resolveTab(args.path);
+          const search = typeof args.search === "string" ? args.search : "";
+          const replace = typeof args.replace === "string" ? args.replace : "";
+          const all = Boolean(args.all);
+          const result = applyTextReplace(tabText(tab), search, replace, all);
+          if (result.count === 0) throw new Error("search text was not found in the open file.");
+          applyBufferEdit(tab, result.text);
+          return { path: tab.path, replacements: result.count, dirty: tab.dirty };
+        }
+        case "editor.replaceLines": {
+          const tab = await resolveTab(args.path);
+          const fromLine = typeof args.fromLine === "number" ? args.fromLine : 0;
+          const toLine = typeof args.toLine === "number" ? args.toLine : 0;
+          const text = typeof args.text === "string" ? args.text : "";
+          const result = applyLineReplace(tabText(tab), fromLine, toLine, text);
+          applyBufferEdit(tab, result.text);
+          return { path: tab.path, totalLines: result.totalLines, dirty: tab.dirty };
+        }
+        case "editor.setContent": {
+          const tab = await resolveTab(args.path);
+          const text = typeof args.text === "string" ? args.text : "";
+          applyBufferEdit(tab, text.replace(/\r\n/g, "\n"));
+          return { path: tab.path, lines: (tab === active ? view.state : tab.state).doc.lines, dirty: tab.dirty };
+        }
+        case "editor.insert": {
+          const tab = await resolveTab(args.path);
+          const text = typeof args.text === "string" ? args.text : "";
+          if (typeof args.line === "number" && args.line >= 1) {
+            const bufLines = tabText(tab).split("\n");
+            const at = Math.min(bufLines.length, Math.max(0, Math.floor(args.line) - 1));
+            bufLines.splice(at, 0, ...text.replace(/\r\n/g, "\n").split("\n"));
+            applyBufferEdit(tab, bufLines.join("\n"));
+          } else if (tab === active) {
+            if (tab.readOnly) throw new Error(tab.readOnlyWhy || `${tab.path} is read-only.`);
+            const sel = view.state.selection.main;
+            view.dispatch({ changes: { from: sel.from, to: sel.to, insert: text } });
+          } else {
+            applyBufferEdit(tab, tabText(tab) + text);
+          }
+          return { path: tab.path, dirty: tab.dirty };
+        }
+        case "editor.goto": {
+          const line = typeof args.line === "number" ? args.line : 1;
+          goTo(line);
+          return { path: active?.path ?? null, line };
+        }
+        case "editor.find": {
+          const tab = await resolveTab(args.path);
+          const query = typeof args.query === "string" ? args.query : "";
+          return { path: tab.path, matches: findInText(tabText(tab), query) };
+        }
+        default:
+          throw new Error(`Unknown command: ${command}`);
+      }
+    }
+    throw new Error(`Unknown method: ${method}`);
+  });
   ctx.onResize(() => {
     const narrow = ctx.root.clientWidth < 620;
     ctx.root.classList.toggle("ce-narrow", narrow);
