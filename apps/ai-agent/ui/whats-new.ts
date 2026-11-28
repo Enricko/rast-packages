@@ -11,6 +11,16 @@ export interface Release {
 
 export const WHATS_NEW: Release[] = [
   {
+    version: "1.5.0",
+    date: "2026-11-28",
+    items: [
+      "The panel beside the chat has tabs, like a browser: artifacts, files and web pages each open in their own tab, with + to open a path or address, Fill to use the whole window and Hide. Each chat keeps its tabs.",
+      "Word, Excel and PowerPoint files show as pages. Markdown is rendered, CSV shows as a table, code with line numbers, and any other file offers Download and File Station.",
+      "Links open beside the chat: a site that allows it shows inside the tab, others as a card with Open in a new tab.",
+      "Each file a reply writes gets a card under it, to open it beside the chat.",
+    ],
+  },
+  {
     version: "1.4.0",
     date: "2026-11-28",
     items: [

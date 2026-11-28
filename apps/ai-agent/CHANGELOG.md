@@ -7,6 +7,8 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-28
+
 ### Added
 
 - **The panel beside the chat has tabs.** Artifacts, files and web pages a
@@ -19,7 +21,9 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 - **Documents as pages.** Word, Excel, PowerPoint, OpenDocument and RTF files
   show as pages: LibreOffice on the server turns them into PDFs, in a locked
   systemd unit (no network, no files of the server), kept a week per account.
-  `POST /api/ai/view/convert`, `GET /api/ai/view/converted/{id}`.
+  `POST /api/ai/view/convert`, `GET /api/ai/view/converted/{id}`. When
+  LibreOffice or a part of it is missing, the tab says which and offers
+  administrators **Open App Center** (Server components → LibreOffice).
 - **Every other file.** Markdown rendered, CSV/TSV as a table, JSON
   formatted, HTML as a walled-off page (`GET /api/ai/view/html`), text and
   code with line numbers; other files offer Download and File Station.
