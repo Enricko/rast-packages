@@ -775,7 +775,22 @@ export const TOOL_INFO: Record<string, { label: string; doing: string; arg: stri
   fetch_url: { label: "Open a web page", doing: "Opening", arg: "url", icon: "external" },
   browser: { label: "Use the browser", doing: "Browsing", arg: "action", icon: "browser" },
   artifact: { label: "Artifact", doing: "Writing", arg: "title", icon: "compose" },
+  open_app: { label: "Open an app", doing: "Opening", arg: "app", icon: "apps" },
 };
+
+/** What an `open_app` call opens: the app and its parameters (`{ path, line }`). */
+export function openAppTarget(block: Pick<ToolBlock, "name" | "input">): { app: string; params: { path?: string; line?: number } } | null {
+  if (block.name !== "open_app" || !block.input || typeof block.input !== "object") return null;
+  const { app, path, line } = block.input;
+  if (typeof app !== "string" || !app) return null;
+  return {
+    app,
+    params: {
+      ...(typeof path === "string" && path ? { path } : {}),
+      ...(typeof line === "number" && Number.isInteger(line) && line > 0 ? { line } : {}),
+    },
+  };
+}
 
 // ------------------------------------------------------------- artifacts
 
@@ -888,9 +903,14 @@ export function browserStep(input: Record<string, unknown>): string {
 }
 
 /** The argument a tool card shows (its path, command, query or address). */
-export function toolArgument(block: Pick<ToolBlock, "name" | "input">): string {
+export function toolArgument(block: Pick<ToolBlock, "name" | "input">, appName: (id: string) => string = (id) => id): string {
   const key = TOOL_INFO[block.name]?.arg ?? "path";
   if (typeof block.input === "string") return block.input;
+  const opens = openAppTarget(block);
+  if (opens) {
+    const { path, line } = opens.params;
+    return path ? `${appName(opens.app)} · ${path}${line ? `:${line}` : ""}` : appName(opens.app);
+  }
   if (block.name === "browser" && block.input) return browserStep(block.input);
   const value = block.input?.[key];
   return typeof value === "string" ? value : JSON.stringify(block.input ?? {});

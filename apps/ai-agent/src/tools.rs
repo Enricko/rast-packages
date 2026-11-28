@@ -18,6 +18,10 @@
 //! * `artifact`: content shown in a panel beside the chat (a page or small
 //!   app, an SVG picture, a document, code); it touches nothing, so it never
 //!   asks first. Pages run sandboxed (see `api::ai::get_artifact`).
+//! * `open_app`: opens a RAST app the account may open beside the chat (Code
+//!   Editor at a file and line, File Station at a folder, …); the page that
+//!   started the reply opens the window. It reads and changes nothing, so it
+//!   never asks first.
 
 use std::{
     io::Read,
@@ -48,9 +52,10 @@ pub const WEB_SEARCH: &str = "web_search";
 pub const FETCH_URL: &str = "fetch_url";
 pub const BROWSER: &str = "browser";
 pub const ARTIFACT: &str = "artifact";
+pub const OPEN_APP: &str = "open_app";
 
 /// Every tool, in the order agents' settings list them.
-pub const ALL: [&str; 12] = [
+pub const ALL: [&str; 13] = [
     LIST_FILES,
     READ_FILE,
     SEARCH_FILES,
@@ -63,6 +68,7 @@ pub const ALL: [&str; 12] = [
     FETCH_URL,
     BROWSER,
     ARTIFACT,
+    OPEN_APP,
 ];
 
 /// Kinds of artifact (see [`ARTIFACT`]).
@@ -106,6 +112,7 @@ pub fn label(name: &str) -> &'static str {
         FETCH_URL => "Open a web page",
         BROWSER => "Use the browser",
         ARTIFACT => "Show an artifact",
+        OPEN_APP => "Open an app",
         _ => "Unknown tool",
     }
 }
@@ -115,9 +122,10 @@ pub fn is_tool(name: &str) -> bool {
 }
 
 /// Whether a call waits for its owner first: every tool that reads or
-/// changes something does; an artifact only shows what the model wrote.
+/// changes something does; an artifact only shows what the model wrote, and
+/// opening an app only opens a window.
 pub fn asks_first(name: &str) -> bool {
-    name != ARTIFACT
+    name != ARTIFACT && name != OPEN_APP
 }
 
 /// Whether the owner may let the tool run without asking in a chat: every
@@ -151,6 +159,8 @@ pub struct Available {
     /// The chat's workspace: file tools stay inside it and commands start
     /// in it (see [`super::workspace`]).
     pub workspace: Option<super::workspace::Scope>,
+    /// The RAST apps the account may open (`open_app`).
+    pub apps: Vec<super::host::HostApp>,
 }
 
 impl Available {
@@ -202,7 +212,13 @@ impl Available {
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.names
             .iter()
-            .filter_map(|name| spec(name, self.shell, self.guarded))
+            .filter_map(|name| {
+                if *name == OPEN_APP {
+                    open_app_spec(&self.apps)
+                } else {
+                    spec(name, self.shell, self.guarded)
+                }
+            })
             .collect()
     }
 }
@@ -245,7 +261,52 @@ pub async fn available(state: &Agent, user: &AuthUser) -> Available {
         out.names.push(BROWSER);
     }
     out.names.push(ARTIFACT);
+    out.apps = state.host.apps(user).await;
+    if !out.apps.is_empty() {
+        out.names.push(OPEN_APP);
+    }
     out
+}
+
+/// `open_app`, naming the apps the account may open.
+pub fn open_app_spec(apps: &[super::host::HostApp]) -> Option<ToolSpec> {
+    if apps.is_empty() {
+        return None;
+    }
+    let list = apps
+        .iter()
+        .map(|app| {
+            let mut line = format!("- {} ({})", app.id, app.name);
+            if !app.description.is_empty() {
+                line.push_str(&format!(": {}", app.description.trim_end_matches('.')));
+            }
+            match app.id.as_str() {
+                "files" => line.push_str(". path: the folder to show"),
+                _ if !app.opens.is_empty() => line.push_str(&format!(
+                    ". path: a file it opens ({})",
+                    app.opens.join(", ")
+                )),
+                _ => {}
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let ids: Vec<&str> = apps.iter().map(|app| app.id.as_str()).collect();
+    Some(ToolSpec {
+        name: OPEN_APP.into(),
+        description: format!(
+            "Open one of the person's RAST apps in a window beside this chat, to show them something there: Code Editor at a file and line you wrote or are talking about, File Station at a folder, or another app. It only opens the window (reading and changing nothing), and only when the person would want it: when they ask, or to show a result. The apps they may open:\n{list}"
+        ),
+        parameters: schema(
+            json!({
+                "app": {"type": "string", "enum": ids},
+                "path": {"type": "string", "description": "For apps that open a file or folder: its absolute path in the person's RAST files ('/' is their home folder)"},
+                "line": {"type": "integer", "description": "Code Editor: the line to show (1 is the first)"},
+            }),
+            &["app"],
+        ),
+    })
 }
 
 fn schema(properties: Value, required: &[&str]) -> Value {
@@ -379,6 +440,51 @@ pub fn spec(name: &str, shell: Option<Shell>, guarded: bool) -> Option<ToolSpec>
     })
 }
 
+/// `open_app`, checked: the app and the path the window opens.
+pub fn open_app(available: &Available, input: &Value) -> Result<String, String> {
+    let app_id = text_arg(input, "app")?.trim().to_string();
+    let Some(app) = available.apps.iter().find(|app| app.id == app_id) else {
+        let ids: Vec<&str> = available.apps.iter().map(|app| app.id.as_str()).collect();
+        return Err(format!(
+            "{app_id:?} is not an app the person may open; they may open: {}",
+            ids.join(", ")
+        ));
+    };
+    let path = input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+    if let Some(path) = path {
+        if !path.starts_with('/') {
+            return Err("give the path from the person's home folder, starting with '/'".into());
+        }
+        // The window opens exactly this path: it must be the one the
+        // chat's workspace allows, as written.
+        let resolved = available.file_path(path)?;
+        if resolved != path {
+            return Err(format!("give the path as {resolved}"));
+        }
+    }
+    let line = input
+        .get("line")
+        .and_then(Value::as_u64)
+        .filter(|line| *line > 0);
+    if line.is_some() && path.is_none() {
+        return Err("a line needs the file's path".into());
+    }
+    Ok(match (path, line) {
+        (Some(path), Some(line)) => {
+            format!(
+                "{} is open at {path}, line {line}, beside the chat.",
+                app.name
+            )
+        }
+        (Some(path), None) => format!("{} is open at {path} beside the chat.", app.name),
+        _ => format!("{} is open beside the chat.", app.name),
+    })
+}
+
 /// An artifact call, checked (see [`ARTIFACT`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {
@@ -460,6 +566,12 @@ fn text_arg<'a>(input: &'a Value, key: &str) -> Result<&'a str, String> {
 pub fn summary(name: &str, input: &Value) -> String {
     if name == BROWSER {
         let line: String = browser::describe(input).chars().take(300).collect();
+        return format!("{name}: {line}");
+    }
+    if name == OPEN_APP {
+        let app = input.get("app").and_then(Value::as_str).unwrap_or("");
+        let path = input.get("path").and_then(Value::as_str).unwrap_or("");
+        let line: String = format!("{app} {path}").trim().chars().take(300).collect();
         return format!("{name}: {line}");
     }
     let key = match name {
@@ -739,6 +851,7 @@ async fn run_tool(
                 .collect::<Vec<_>>()
                 .join("\n"))
         }
+        OPEN_APP => open_app(available, input),
         ARTIFACT => {
             let artifact = check_artifact(input)?;
             Ok(format!(
@@ -1617,6 +1730,62 @@ mod tests {
         assert!(check_artifact(&json!({"kind": "code", "content": big})).is_err());
         assert_eq!(slug("--"), "artifact");
         assert!(!asks_first(ARTIFACT) && asks_first(FETCH_URL) && asks_first(BROWSER));
+    }
+
+    #[test]
+    fn open_app_names_the_apps_and_opens_only_those() {
+        use super::super::host::HostApp;
+        let app = |id: &str, name: &str, opens: &[&str]| HostApp {
+            id: id.into(),
+            name: name.into(),
+            description: format!("{name} does things."),
+            opens: opens.iter().map(|o| o.to_string()).collect(),
+        };
+        let apps = vec![
+            app("files", "File Station", &[]),
+            app("code", "Code Editor", &["text", ".py"]),
+        ];
+        assert!(open_app_spec(&[]).is_none());
+        let spec = open_app_spec(&apps).unwrap();
+        assert!(spec.description.contains(
+            "- files (File Station): File Station does things. path: the folder to show"
+        ));
+        assert!(spec.description.contains(
+            "- code (Code Editor): Code Editor does things. path: a file it opens (text, .py)"
+        ));
+        assert_eq!(
+            spec.parameters["properties"]["app"]["enum"],
+            json!(["files", "code"])
+        );
+        assert!(!asks_first(OPEN_APP));
+
+        let available = Available {
+            names: vec![OPEN_APP],
+            apps,
+            ..Available::default()
+        };
+        let open = |input: Value| open_app(&available, &input);
+        assert_eq!(
+            open(json!({"app": "code", "path": "/src/main.py", "line": 12})).unwrap(),
+            "Code Editor is open at /src/main.py, line 12, beside the chat."
+        );
+        assert_eq!(
+            open(json!({"app": "files"})).unwrap(),
+            "File Station is open beside the chat."
+        );
+        assert!(open(json!({"app": "terminal"}))
+            .unwrap_err()
+            .contains("they may open: files, code"));
+        assert!(open(json!({"app": "code", "path": "src/main.py"}))
+            .unwrap_err()
+            .contains("starting with '/'"));
+        assert!(open(json!({"app": "code", "line": 3}))
+            .unwrap_err()
+            .contains("needs the file's path"));
+        assert_eq!(
+            summary(OPEN_APP, &json!({"app": "code", "path": "/a.py"})),
+            "open_app: code /a.py"
+        );
     }
 
     #[test]

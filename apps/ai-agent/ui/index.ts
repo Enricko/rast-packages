@@ -44,6 +44,7 @@ import {
   TOOL_INFO,
   chatArtifacts,
   fileUrl,
+  openAppTarget,
   toolArgument,
   toolBlocks,
   upsertMessage,
@@ -83,7 +84,15 @@ interface Params {
   tabs?: SavedTab[];
   active?: number;
   hidden?: boolean;
+  /**
+   * Another app's "Ask AI": a new chat starts with this text in the message
+   * box, for the person to finish and send.
+   */
+  ask?: string;
 }
+
+/** The longest text another app may put in the message box. */
+const MAX_ASK = 20_000;
 
 /** A tab of the panel, as the window keeps it: an artifact (`a`), a path
  * in the person's files (`p`), a web address (`u`) or a file sent in the
@@ -166,6 +175,7 @@ function asParams(value: unknown): Params {
       : {}),
     ...(typeof raw.active === "number" && Number.isInteger(raw.active) ? { active: raw.active } : {}),
     ...(raw.hidden === true ? { hidden: true } : {}),
+    ...(typeof raw.ask === "string" && raw.ask.trim() ? { ask: raw.ask.slice(0, MAX_ASK) } : {}),
   };
 }
 
@@ -501,6 +511,49 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   // by itself while the chat is in view; those already there when a chat
   // opens wait for a click.
   let seenArtifacts = new Set<string>();
+  /** Chats whose replies this page started (sent, answered, retried): the
+   * apps their agent opens open here, not on the account's other pages. */
+  const startedHere = new Set<string>();
+  /** `open_app` calls already acted on, or done before the chat was shown. */
+  let seenOpens = new Set<string>();
+
+  /** An app's name, for the apps this account may open. */
+  function appName(id: string): string {
+    return ctx.desktop.apps().find((app) => app.id === id)?.name ?? id;
+  }
+
+  function openAppFrom(block: ToolBlock): void {
+    const target = openAppTarget(block);
+    if (!target) return;
+    if (!ctx.desktop.apps().some((app) => app.id === target.app)) {
+      ctx.toast.warning(`${appName(target.app)} is not available to this account.`);
+      return;
+    }
+    ctx.openApp(target.app, target.params);
+  }
+
+  /** Open the apps the agent asked for in a reply this page started. */
+  function noticeOpens(): void {
+    if (!current) return;
+    const here = startedHere.has(current.conversation.id);
+    for (const message of current.messages) {
+      for (const block of message.content) {
+        if (block.type !== "tool" || block.name !== "open_app" || seenOpens.has(block.id)) continue;
+        if (block.status !== "done" && block.status !== "error" && block.status !== "denied" && block.status !== "skipped") continue;
+        seenOpens.add(block.id);
+        if (block.status === "done" && here) openAppFrom(block);
+      }
+    }
+  }
+
+  /** The open_app calls a chat already holds (shown, not opened again). */
+  function doneOpens(messages: Message[]): Set<string> {
+    const ids = new Set<string>();
+    for (const message of messages) {
+      for (const block of message.content) if (block.type === "tool" && block.name === "open_app") ids.add(block.id);
+    }
+    return ids;
+  }
   function openArtifact(callId: string, options: { background?: boolean } = {}): void {
     if (!current) return;
     const list = chatArtifacts(current.messages);
@@ -709,6 +762,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       if (switching) stowPanel();
       current = detail;
       if (switching) seenArtifacts = new Set(chatArtifacts(detail.messages).map((a) => a.callId));
+      if (switching) seenOpens = doneOpens(detail.messages);
       renderAll(switching);
       const place = options_.place;
       if (place && (place.tabs || place.artifact)) restoreTabs(place);
@@ -731,6 +785,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     closeSettings();
     stowPanel();
     seenArtifacts = new Set();
+    seenOpens = new Set();
     loadToken += 1;
     current = null;
     draftAllowed = [];
@@ -739,6 +794,17 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     ctx.saveState({});
     renderAll(true);
     input.focus();
+  }
+
+  /** A new chat with `text` in the message box (another app's "Ask AI"). */
+  function askWith(text: string): void {
+    openNew();
+    input.value = text;
+    autoGrow();
+    updateComposer();
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    input.scrollTop = input.scrollHeight;
   }
 
   function openSettings(): void {
@@ -812,6 +878,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         current = { conversation: created.conversation, messages: [], seq: 0, readOnly: false };
         saveWindow();
       }
+      startedHere.add(id);
       const sent = await ctx.api.post<{ conversation: Conversation; message: Message; reply: Message }>(
         `/api/ai/conversations/${encodeURIComponent(id)}/messages`,
         { text, files: files.map((file) => file.id) },
@@ -853,6 +920,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   /** A reply waiting to try again tries now. */
   async function retryNow(): Promise<void> {
     if (!current) return;
+    startedHere.add(current.conversation.id);
     try {
       await ctx.api.post(`/api/ai/conversations/${encodeURIComponent(current.conversation.id)}/retry`);
     } catch (error) {
@@ -866,6 +934,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     const id = current.conversation.id;
     const owner = current.messages.find((m) => m.content.some((b) => b.type === "tool" && b.id === call.id));
     const before = owner ? heardCount(owner.id) : 0;
+    startedHere.add(id);
     try {
       const body = await ctx.api.post<{ message: Message; conversation: Conversation }>(
         `/api/ai/conversations/${encodeURIComponent(id)}/tools/${encodeURIComponent(call.id)}`,
@@ -1566,7 +1635,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
 
   function toolCard(message: Message, block: ToolBlock, opened: Map<string, boolean>): HTMLElement {
     const info = TOOL_INFO[block.name];
-    const arg = toolArgument(block);
+    const arg = toolArgument(block, appName);
     const waiting = message.status === "waiting" && block.status === "pending";
     const canAnswer = waiting && !current?.readOnly;
     const state: Record<ToolBlock["status"], [string, string]> = {
@@ -1588,6 +1657,14 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         h("span", { class: "ai-tool-icon" }, iconSvg(info?.icon ?? "apps", 14)),
         h("span", { class: "ai-tool-label" }, info?.label ?? block.name),
         h("span", { class: "ai-tool-arg", title: arg }, arg),
+        block.name === "open_app" && block.status === "done"
+          ? h(
+              "button",
+              { class: "btn btn-ghost btn-sm ai-tool-view", type: "button", title: "Open the app again", onClick: () => openAppFrom(block) },
+              iconSvg("external", 13),
+              h("span", {}, "Open"),
+            )
+          : null,
         viewable(block)
           ? h(
               "a",
@@ -1681,6 +1758,18 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     );
   }
 
+  /** The apps this account may open that open a file (their `opens`:
+   * an extension, or `text` for the files a text editor opens). */
+  function openersOf(path: string): Array<{ id: string; name: string }> {
+    const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+    const dot = name.lastIndexOf(".");
+    const ext = dot > 0 ? name.slice(dot) : "";
+    const kind = viewOfPath(path)?.kind;
+    return ctx.desktop
+      .apps()
+      .filter((app) => ((app as { opens?: string[] }).opens ?? []).some((rule) => (rule.startsWith(".") ? rule === ext : rule === kind)));
+  }
+
   /** The paths a reply's write_file calls wrote, in order, once each. */
   function writtenFiles(message: Message): string[] {
     const paths = new Set<string>();
@@ -1722,6 +1811,11 @@ function mountAgentApp(ctx: AppContext): AppInstance {
                   link.remove();
                 },
               },
+              ...openersOf(path).map((app) => ({
+                label: `Open in ${app.name}`,
+                icon: "external",
+                onClick: () => ctx.openApp(app.id, { path }),
+              })),
               { label: "Show in File Station", icon: "folder", onClick: () => ctx.openApp("files", { path: folderOf(path) }) },
             ],
             { anchor: more, ariaLabel: target.title },
@@ -1889,6 +1983,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       if (known) refreshMessage(event.message);
       else renderThread();
       noticeArtifacts();
+      noticeOpens();
       updateComposer();
     }),
     realtime.on<ConversationEvent>("ai.conversation", (event) => {
@@ -1930,7 +2025,8 @@ function mountAgentApp(ctx: AppContext): AppInstance {
   });
   ctx.onReopen((value) => {
     const params = asParams(value);
-    if (params.settings) openSettings();
+    if (params.ask) askWith(params.ask);
+    else if (params.settings) openSettings();
     else if (params.conversationId) void openConversation(params.conversationId, { place: params });
   });
   // Typing while the window is in front writes in the message box, as in
@@ -1988,7 +2084,8 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     if (disposed) return;
     const loaded = options as Options | null;
     showWhatsNew(ctx, loaded?.version, loaded?.whatsNewSeen);
-    if (start.settings && isAdmin) openSettings();
+    if (start.ask) askWith(start.ask);
+    else if (start.settings && isAdmin) openSettings();
     else if (start.conversationId) await openConversation(start.conversationId, { quiet: true, place: start });
     else renderThread();
   })();

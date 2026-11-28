@@ -2282,9 +2282,10 @@ async fn ai_agent_tools_ask_before_acting() {
             "list_server_files",
             "read_server_file",
             "fetch_url",
-            "artifact"
+            "artifact",
+            "open_app"
         ],
-        "server reads (read-only), no shell or browser without Terminal, no web search without a service"
+        "server reads (read-only), no shell or browser without Terminal, no web search without a service; apps to open"
     );
     let (_, _, body) = server
         .request(

@@ -103,6 +103,30 @@ pub struct Group {
     pub name: String,
 }
 
+/// A RAST app the account may open (the `open_app` tool).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct HostApp {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Files its window opens (`text`, `image`, `pdf` or `.ext`).
+    #[serde(default)]
+    pub opens: Vec<String>,
+}
+
+/// RAST's built-in apps, for a RAST without `/v1/users/{id}/apps`.
+const BUILT_IN_APPS: [(&str, &str); 8] = [
+    ("files", "File Station"),
+    ("monitor", "Resource Monitor"),
+    ("logs", "Activity Logs"),
+    ("controlpanel", "Control Panel"),
+    ("applications", "Docker"),
+    ("backup", "Backup Center"),
+    ("packages", "App Center"),
+    ("terminal", "Terminal"),
+];
+
 /// RAST, as AI Agent reaches it.
 #[derive(Clone)]
 pub enum Host {
@@ -255,6 +279,40 @@ impl Host {
                 .await
                 .is_ok_and(|a| a["allowed"] == true),
         }
+    }
+
+    /// The apps the account may open now, AI Agent itself left out.
+    pub async fn apps(&self, user: &AuthUser) -> Vec<HostApp> {
+        let listed = match self {
+            Host::Remote(remote) => remote
+                .get(&format!("/v1/users/{}/apps", user.id))
+                .await
+                .ok()
+                .and_then(|answer| {
+                    serde_json::from_value::<Vec<HostApp>>(answer["apps"].clone()).ok()
+                }),
+            Host::BuiltIn(_) => None,
+        };
+        let mut apps = match listed {
+            Some(apps) => apps,
+            // An older RAST: its built-in apps, one by one.
+            None => {
+                let mut apps = Vec::new();
+                for (id, name) in BUILT_IN_APPS {
+                    if self.may_use_app(user, id).await {
+                        apps.push(HostApp {
+                            id: id.into(),
+                            name: name.into(),
+                            description: String::new(),
+                            opens: Vec::new(),
+                        });
+                    }
+                }
+                apps
+            }
+        };
+        apps.retain(|app| app.id != "agent");
+        apps
     }
 
     // ------------------------------------------------------------ server
