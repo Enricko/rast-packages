@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  askText,
   baseName,
   detectIndent,
   isInside,
@@ -68,4 +69,15 @@ test("indentation and line endings are read from the text", () => {
   assert.equal(lineEnding("a\r\nb\r\nc"), "CRLF");
   assert.equal(lineEnding("a\nb\r\nc\n"), "LF");
   assert.equal(lineEnding(""), "LF");
+});
+
+test("Ask AI hands over the selected lines in a code block, else the path", () => {
+  assert.equal(askText("/a/app.py", "python"), "About my file /a/app.py: ");
+  assert.equal(askText("/a/app.py", "python", { text: "  ", from: 1, to: 1 }), "About my file /a/app.py: ");
+  assert.equal(
+    askText("/a/app.py", "python", { text: "x = 1\ny = 2\n", from: 3, to: 4 }),
+    "About lines 3–4 of my file /a/app.py:\n```python\nx = 1\ny = 2\n```\n\n",
+  );
+  assert.equal(askText("/n.txt", "text", { text: "a ``` b", from: 2, to: 2 }), "About line 2 of my file /n.txt:\n````\na ``` b\n````\n\n");
+  assert.equal(askText("/n.txt", "text", { text: "abcdef", from: 1, to: 1 }, 3), "About line 1 of my file /n.txt:\n```\nabc\n…\n```\n\n");
 });

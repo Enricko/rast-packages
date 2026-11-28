@@ -13,3 +13,5 @@
   reloading loses nothing.
 - Keeps each file's indentation and line endings (LF or CRLF).
 - Opens a file at a line for other apps: `openApp("code", { path, line })`.
+- More → Ask AI: AI Agent starts a chat with the selected lines (or the
+  file's path) in its message box, for you to finish and send.

@@ -14,6 +14,21 @@ export function parentOf(path: string): string {
   return at <= 0 ? "/" : trimmed.slice(0, at);
 }
 
+/**
+ * What "Ask AI" puts in AI Agent's message box: the selected lines in a code
+ * block (a longer fence when they hold backticks; at most `max` characters),
+ * else the file's path.
+ */
+export function askText(path: string, language: string, selection?: { text: string; from: number; to: number }, max = 12_000): string {
+  if (!selection || !selection.text.trim()) return `About my file ${path}: `;
+  const text = selection.text.length > max ? `${selection.text.slice(0, max)}\n…` : selection.text;
+  const runs = [...text.matchAll(/`+/g)].map((match) => match[0].length);
+  const fence = "`".repeat(Math.max(2, ...runs) + 1);
+  const lines = selection.from === selection.to ? `line ${selection.from}` : `lines ${selection.from}–${selection.to}`;
+  const tag = language === "text" ? "" : language;
+  return `About ${lines} of my file ${path}:\n${fence}${tag}\n${text.replace(/\n+$/, "")}\n${fence}\n\n`;
+}
+
 export function baseName(path: string): string {
   const trimmed = path.replace(/\/+$/, "");
   return trimmed.slice(trimmed.lastIndexOf("/") + 1) || "/";

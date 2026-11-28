@@ -17,7 +17,7 @@ import { confirmDialog, contextMenu, errorMessage, modal, promptDialog, type Con
 import { dropDraft, moveDraft, readDraft, writeDraft } from "./drafts";
 import { fileExtensions, indentExtension, indentSlot, languageSlot, wrapSlot } from "./editor";
 import { languageExtension } from "./languages";
-import { baseName, detectIndent, isInside, joinPath, languageChoices, languageOf, lineEnding, parentOf, relativeTo, validName, type LanguageId } from "./paths";
+import { askText, baseName, detectIndent, isInside, joinPath, languageChoices, languageOf, lineEnding, parentOf, relativeTo, validName, type LanguageId } from "./paths";
 import { createTree, type TreeEntry } from "./tree";
 
 /** The largest file opened (RAST's text reads stop at 4 MiB). */
@@ -825,8 +825,30 @@ export function mountCodeEditor(ctx: AppContext): AppInstance {
   }
   quickOpenButton.addEventListener("click", quickOpen);
 
+  /** Whether this account may open AI Agent. */
+  function canAskAi(): boolean {
+    return ctx.desktop.apps().some((app) => app.id === "agent");
+  }
+
+  /** AI Agent on a new chat about the selection (else the file), not sent. */
+  function askAi(tab: Tab): void {
+    let selection: { text: string; from: number; to: number } | undefined;
+    if (tab === active) {
+      const range = view.state.selection.main;
+      if (!range.empty) {
+        const doc = view.state.doc;
+        selection = { text: view.state.sliceDoc(range.from, range.to), from: doc.lineAt(range.from).number, to: doc.lineAt(range.to).number };
+      }
+    }
+    ctx.openApp("agent", { ask: askText(tab.path, tab.language.id, selection) });
+  }
+
   moreButton.addEventListener("click", () => {
     const tab = active;
+    const ask: ContextMenuEntry[] =
+      tab && canAskAi()
+        ? ["separator", { label: view.state.selection.main.empty ? "Ask AI about this file" : "Ask AI about the selection", icon: "sparkle", onClick: () => askAi(tab) }]
+        : [];
     contextMenu(0, 0, [
       { label: "Find a file", icon: "search", shortcut: "Ctrl+P", onClick: quickOpen },
       { label: "Search in this file", icon: "search", shortcut: "Ctrl+F", disabled: !tab, onClick: () => openSearchPanel(view) },
@@ -838,6 +860,7 @@ export function mountCodeEditor(ctx: AppContext): AppInstance {
       "separator",
       { label: "Wrap long lines", checked: wrap, onClick: () => setWrap(!wrap) },
       { label: "Close all", disabled: !tabs.length, onClick: () => void closeTabs([...tabs]) },
+      ...ask,
     ], { anchor: moreButton, ariaLabel: "More" });
   });
 
