@@ -223,6 +223,22 @@ fn builtin_command_guidance(cmd: &str, apps: &[HostApp]) -> Option<String> {
                 )
             }
         }
+        "sandbox" => {
+            let has_studio = apps.iter().any(|a| a.id == "studio");
+            if has_studio {
+                Some(
+                    "## Mode: /sandbox\n\
+                     Use **Sandbox Studio** (`app: \"studio\"`) via `open_app` + `use_app` to register the project folder (`project.create`), run/preview it (`project.start`, `project.viewport`, `project.logs`, `ui.screenshot`), deploy it to `/app/<slug>` (`project.deploy`), or install it as a Custom RAST App (`project.package`)."
+                        .into(),
+                )
+            } else {
+                Some(
+                    "## Mode: /sandbox\n\
+                     Build and test the project cleanly so it is ready for live preview and deployment."
+                        .into(),
+                )
+            }
+        }
         "word" => {
             let has_word = apps.iter().any(|a| a.id == "wordcraft");
             if has_word {

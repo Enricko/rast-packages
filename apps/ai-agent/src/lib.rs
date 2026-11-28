@@ -2119,7 +2119,7 @@ pub fn system_prompt(
         if tools.has(tools::USE_APP) && !tools.apps.is_empty() {
             prompt.push_str(
                 "\n\n# Installed Apps\n\nYou can operate every installed RAST app directly with `open_app` and `use_app`. \
-                 Choose the right app for the task (for example, use Code Editor (`code`) as a live coding agent with `engine.execute` commands `file.open`, `file.create`, `editor.read`, `editor.replace`, `editor.replaceLines`, `editor.setContent`, `file.save`; use WordCraft (`wordcraft`) for documents; use other installed Craft/RAST apps for spreadsheets, decks, images, files, Docker, and system management). \
+                 Choose the right app for the task (for example, use Code Editor (`code`) as a live coding agent with `engine.execute` commands `file.open`, `file.create`, `editor.read`, `editor.replace`, `editor.replaceLines`, `editor.setContent`, `file.save`; use WordCraft (`wordcraft`) for documents; use Sandbox Studio (`studio`) with `project.create`, `project.start`, `project.viewport`, `project.logs`, `project.deploy` (`/app/<slug>`), and `project.package` to preview, deploy, and package web/desktop apps; use other installed Craft/RAST apps for spreadsheets, decks, images, files, Docker, and system management). \
                  Always save your work in the app when finishing.",
             );
         }

@@ -117,6 +117,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { slug: "btw", description: "Ask a quick side question without changing the main task.", icon: "info" },
   { slug: "grill-me", description: "Interview me with focused questions to align on a plan.", icon: "compose" },
   { slug: "code", description: "Act as a coding agent in Code Editor.", icon: "app:code", requiresApp: "code" },
+  { slug: "sandbox", description: "Preview, run, deploy to /app/<name>, or package in Sandbox Studio.", icon: "app:studio", requiresApp: "studio" },
   { slug: "word", description: "Write and format documents in WordCraft.", icon: "app:wordcraft", requiresApp: "wordcraft" },
 ];
 
