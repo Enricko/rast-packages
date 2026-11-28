@@ -3786,6 +3786,7 @@ async fn my_quota(State(state): State<Agent>, user: AuthUser) -> AppResult<Json<
         .into_iter()
         .filter(|p| p.enabled && limits.allows(&p.id) && p.usable_by(user.id))
         .collect();
+    check_stale_quotas(&state, &usable).await;
     let overview = quota_overview(&state, &Default::default()).await?;
     let mut providers = Vec::new();
     for listed in overview["providers"].as_array().into_iter().flatten() {
@@ -3807,7 +3808,7 @@ async fn my_quota(State(state): State<Agent>, user: AuthUser) -> AppResult<Json<
                     "ready": a["ready"],
                     "resting": a["resting"],
                     "quota": a["quota"],
-                    "counted": {"hours5": a["counted"]["hours5"], "week": a["counted"]["week"]},
+                    "counted": {"hours5": a["counted"]["hours5"], "day": a["counted"]["day"], "week": a["counted"]["week"]},
                     "limits": a["limits"],
                 })
             })
@@ -3828,9 +3829,94 @@ async fn my_quota(State(state): State<Agent>, user: AuthUser) -> AppResult<Json<
 }
 
 /// Whether RAST can ask the account's provider for its limits on demand
-/// (ChatGPT's Codex plans).
+/// (ChatGPT's Codex, Antigravity and Gemini CLI plans, OpenRouter keys).
 fn can_check(account: &ai::Provider) -> bool {
-    account.kind == Kind::Codex
+    provider::plans::reports_quota(account.kind) || provider::credits::reports(account.kind)
+}
+
+/// When each account was last asked for its limits (asked at most once a
+/// minute, however many windows ask).
+static ASKED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, i64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Ask the account's provider what it has left now and keep the answer.
+async fn check_quota(state: &Agent, account: &ai::Provider) -> Result<(), String> {
+    if let Ok(mut asked) = ASKED.lock() {
+        asked.insert(account.id.clone(), now_ms());
+    }
+    let base = account.effective_base_url();
+    let kind = account.kind;
+    let result = if kind.signs_in() {
+        let (token, account_ref) = ai::signed_in_token(&state.db, &state.secrets, account)
+            .await
+            .map_err(|e| e.public_message())?;
+        tokio::task::spawn_blocking(move || {
+            provider::plans::quota(kind, &base, &token, &account_ref, now_ms())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        let key = account
+            .api_key(&state.secrets)
+            .map_err(|e| e.public_message())?
+            .unwrap_or_default();
+        tokio::task::spawn_blocking(move || {
+            provider::credits::key_quota(kind, &base, &key).map(|r| r.map(|w| (w, String::new())))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    };
+    let (windows, _plan) = result.ok_or("this provider does not say what is left")??;
+    let quota = provider::limits::Quota {
+        windows,
+        checked_at: now_ms(),
+    };
+    ai::accounts::store_quota(&state.db, &account.id, &quota).await;
+    Ok(())
+}
+
+/// For the bar under the message box: ask again for the limits of the
+/// accounts that say on demand and were last told over two minutes ago
+/// (each at most once a minute). Waits a few seconds; a slower answer is
+/// kept for the next look.
+async fn check_stale_quotas(state: &Agent, providers: &[ai::Provider]) {
+    let now = now_ms();
+    let mut checks = Vec::new();
+    for provider in providers {
+        let Ok(accounts) = ai::accounts::of(&state.db, provider).await else {
+            continue;
+        };
+        for account in accounts {
+            if account.paused || !can_check(&account) || !account.has_credentials() {
+                continue;
+            }
+            if now - account.quota.checked_at < 120_000 {
+                continue;
+            }
+            let recently = ASKED
+                .lock()
+                .ok()
+                .and_then(|asked| asked.get(&account.id).copied())
+                .is_some_and(|at| now - at < 60_000);
+            if recently {
+                continue;
+            }
+            let state = state.clone();
+            checks.push(tokio::spawn(async move {
+                if let Err(error) = check_quota(&state, &account).await {
+                    tracing::debug!(account = %account.id, error = %error, "could not ask for an account's limits");
+                }
+            }));
+        }
+    }
+    if checks.is_empty() {
+        return;
+    }
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        futures::future::join_all(checks),
+    )
+    .await;
 }
 
 async fn quota_overview(
@@ -3954,7 +4040,8 @@ struct QuotaRefresh {
 }
 
 /// POST /api/ai/admin/quota/refresh — ask the providers that say on demand
-/// (ChatGPT's Codex plans) for their accounts' limits now; returns the
+/// (ChatGPT's Codex, Antigravity and Gemini CLI plans, OpenRouter keys) for
+/// their accounts' limits now; returns the
 /// quota page with any account whose provider could not be asked.
 async fn refresh_quota(
     State(state): State<Agent>,
@@ -3978,29 +4065,8 @@ async fn refresh_quota(
             if !asked && now - account.quota.checked_at < 60_000 {
                 continue;
             }
-            let result = match ai::signed_in_token(&state.db, &state.secrets, &account).await {
-                Ok((token, account_ref)) => {
-                    let base = account.effective_base_url();
-                    tokio::task::spawn_blocking(move || {
-                        provider::plans::codex::codex_usage(&base, &token, &account_ref, now_ms())
-                    })
-                    .await
-                    .map_err(|e| e.to_string())
-                    .and_then(|r| r)
-                }
-                Err(error) => Err(error.public_message()),
-            };
-            match result {
-                Ok((windows, _plan)) => {
-                    let quota = provider::limits::Quota {
-                        windows,
-                        checked_at: now_ms(),
-                    };
-                    ai::accounts::store_quota(&state.db, &account.id, &quota).await;
-                }
-                Err(error) => {
-                    checks.insert(account.id.clone(), error);
-                }
+            if let Err(error) = check_quota(&state, &account).await {
+                checks.insert(account.id.clone(), error);
             }
         }
     }

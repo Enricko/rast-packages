@@ -24,6 +24,10 @@ pub struct Window {
     /// When the window starts again (ms since the epoch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<i64>,
+    /// The models it covers, when the provider keeps a limit per group of
+    /// models (Antigravity); empty: every model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
 }
 
 /// The windows one answer reported, and when.
@@ -174,6 +178,7 @@ fn counted(what: &str, limit: f64, remaining: f64, resets_at: Option<i64>) -> Wi
         used: Some(used),
         limit: Some(limit),
         resets_at,
+        models: Vec::new(),
     }
 }
 

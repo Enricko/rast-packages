@@ -22,6 +22,7 @@ import {
   chatStats,
   contextWindow,
   shownAccount,
+  countedFigures,
   timeLeft,
   usageBars,
   type ChatQuotaAccount,
@@ -699,6 +700,37 @@ test("the provider's limits show as bars, reported or counted", () => {
   const resting = { ...codex, id: "r", resting: { until: now + 1000, reason: "limit" } };
   const provider = { id: "p", name: "Codex", kind: "codex", kindLabel: "ChatGPT (Codex)", signsIn: true, accounts: [resting, { ...codex, id: "b" }] };
   assert.equal(shownAccount(provider, now)?.id, "b");
-  assert.equal(shownAccount({ ...provider, accounts: [account({})] }, now), null);
+  // A provider that reports nothing still shows: what RAST counted.
+  const quiet = account({ id: "q", counted: { hours5: { calls: 2, tokens: 1200 }, day: { calls: 5, tokens: 9000 }, week: { calls: 9, tokens: 40_000 } } });
+  assert.equal(shownAccount({ ...provider, accounts: [quiet] }, now)?.id, "q");
+  assert.deepEqual(
+    countedFigures(quiet).map((f) => [f.short, f.tokens, f.calls]),
+    [
+      ["5h", 1200, 2],
+      ["24h", 9000, 5],
+      ["7d", 40_000, 9],
+    ],
+  );
+  assert.equal(shownAccount({ ...provider, accounts: [] }, now), null);
+  // Antigravity keeps a limit per pool of models: the chat model's pool comes first.
+  const pools = account({
+    quota: {
+      windows: [
+        { name: "Claude and GPT", usedPercent: 40, models: ["claude-sonnet-5-5-high", "gpt-oss-120b-medium"] },
+        { name: "Gemini", usedPercent: 10, models: ["gemini-3-flash"] },
+      ],
+    },
+  });
+  assert.deepEqual(
+    usageBars(pools, now, "gemini-3-flash").map((b) => [b.name, b.used]),
+    [
+      ["Gemini", 10],
+      ["Claude and GPT", 40],
+    ],
+  );
+  assert.deepEqual(
+    usageBars(pools, now).map((b) => b.name),
+    ["Claude and GPT", "Gemini"],
+  );
 });
 

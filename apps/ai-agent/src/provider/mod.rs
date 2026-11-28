@@ -32,6 +32,7 @@
 mod anthropic;
 mod chat;
 pub mod cloud_code;
+pub mod credits;
 mod gateway;
 pub mod limits;
 mod models;

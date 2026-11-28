@@ -395,6 +395,8 @@ export interface QuotaWindow {
   limit?: number;
   /** When it starts again (ms). */
   resetsAt?: number;
+  /** The models it covers (absent: every model of the account). */
+  models?: string[];
 }
 
 export interface AccountQuota {
@@ -621,7 +623,7 @@ export function windowLeft(w: QuotaWindow): number | null {
 
 /** What [`countedBars`] reads of an account. */
 export interface CountedAccount {
-  counted: { hours5: Counted; week: Counted };
+  counted: { hours5: Counted; week: Counted; day?: Counted };
   limits?: KeptLimits;
 }
 
@@ -1108,6 +1110,8 @@ export interface UsageBar {
   used: number;
   /** When it starts again (ms). */
   resetsAt?: number;
+  /** The models it covers (absent: every model). */
+  models?: string[];
 }
 
 /**
@@ -1115,15 +1119,21 @@ export interface UsageBar {
  * …), else what RAST counted against the limits it keeps (set in Quota, or
  * seen when the provider last said the account was out).
  */
-export function usageBars(account: ChatQuotaAccount, now: number): UsageBar[] {
-  const reported: UsageBar[] = [];
+export function usageBars(account: ChatQuotaAccount, now: number, model = ""): UsageBar[] {
+  const reported: Array<UsageBar & { rank: number }> = [];
   for (const w of account.quota.windows ?? []) {
     const left = windowLeft(w);
     if (left === null) continue;
     const resetsAt = w.resetsAt && w.resetsAt > now ? w.resetsAt : undefined;
-    reported.push({ name: windowName(w.name), used: Math.round(100 - left), ...(resetsAt ? { resetsAt } : {}) });
+    // A window of the chat's model first, then those of every model, then the other models'.
+    const rank = !w.models?.length ? 1 : model && w.models.includes(model) ? 0 : 2;
+    reported.push({ name: windowName(w.name), used: Math.round(100 - left), ...(resetsAt ? { resetsAt } : {}), ...(w.models?.length ? { models: w.models } : {}), rank });
   }
-  if (reported.length) return reported.slice(0, 3);
+  if (reported.length) {
+    // The order the provider gave, within each rank.
+    const ranked = reported.map((bar, i) => ({ bar, i })).sort((a, b) => a.bar.rank - b.bar.rank || a.i - b.i);
+    return ranked.slice(0, 6).map(({ bar: { rank: _rank, ...bar } }) => bar);
+  }
   return countedBars(account, [account])
     .filter((bar) => bar.left !== null)
     .map((bar) => ({
@@ -1140,10 +1150,34 @@ function windowName(name: string): string {
   return name;
 }
 
-/** The account a provider's chip shows: the first that may answer and has limits. */
+/** The account a provider's chip shows: the first that may answer and has limits, else the first that may answer. */
 export function shownAccount(provider: ChatQuotaProvider, now: number): ChatQuotaAccount | null {
+  const free = (a: ChatQuotaAccount) => a.ready && !(a.resting && a.resting.until > now);
   const withBars = provider.accounts.filter((a) => usageBars(a, now).length);
-  return withBars.find((a) => a.ready && !(a.resting && a.resting.until > now)) ?? withBars[0] ?? null;
+  return withBars.find(free) ?? withBars[0] ?? provider.accounts.find(free) ?? provider.accounts[0] ?? null;
+}
+
+/** What RAST counted for an account that reports no limits: tokens and calls per window. */
+export interface CountedFigure {
+  key: "hours5" | "day" | "week";
+  name: string;
+  short: string;
+  tokens: number;
+  calls: number;
+}
+
+export function countedFigures(account: ChatQuotaAccount): CountedFigure[] {
+  const out: CountedFigure[] = [];
+  for (const [key, name, short] of [
+    ["hours5", "Last 5 hours", "5h"],
+    ["day", "Last 24 hours", "24h"],
+    ["week", "Last 7 days", "7d"],
+  ] as const) {
+    const counted = account.counted[key];
+    if (!counted) continue;
+    out.push({ key, name, short, tokens: counted.tokens ?? 0, calls: counted.calls ?? 0 });
+  }
+  return out;
 }
 
 /** "4h 59m", "29m", "2d 7h", "under a minute". */

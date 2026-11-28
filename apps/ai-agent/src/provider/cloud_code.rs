@@ -748,6 +748,28 @@ pub(crate) fn fetch_available_models(
     account: &str,
     identity: &[(&'static str, String)],
 ) -> Result<Vec<String>, String> {
+    parse_available_models(&available_models_body(base_url, token, account, identity)?)
+}
+
+/// What the account has left, from the same catalog: each model's
+/// `quotaInfo` (see [`parse_quota_windows`]).
+pub(crate) fn fetch_quota(
+    base_url: &str,
+    token: &str,
+    account: &str,
+    identity: &[(&'static str, String)],
+    now_ms: i64,
+) -> Result<Vec<super::limits::Window>, String> {
+    let body = available_models_body(base_url, token, account, identity)?;
+    Ok(parse_quota_windows(&body, now_ms))
+}
+
+fn available_models_body(
+    base_url: &str,
+    token: &str,
+    account: &str,
+    identity: &[(&'static str, String)],
+) -> Result<String, String> {
     let base = base_url.trim().trim_end_matches('/');
     if base.is_empty() {
         return Err("Google's Cloud Code has no address; set its base URL".into());
@@ -777,7 +799,115 @@ pub(crate) fn fetch_available_models(
             format!("Google's Cloud Code refused the model list (HTTP {status}): {said}")
         });
     }
-    parse_available_models(&text)
+    Ok(text)
+}
+
+/// The limits in a catalog: each model's `quotaInfo {remainingFraction,
+/// resetTime}` (a used-up model keeps only `resetTime`), one window per
+/// family of models that share a pool (Claude and GPT, Gemini, Gemini
+/// Argon, the rest); a family whose models stand apart gets a window per
+/// group, named after its first model. Each window lists its models.
+pub(crate) fn parse_quota_windows(body: &str, now_ms: i64) -> Vec<super::limits::Window> {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    let Some(models) = value.get("models").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    // (family order, family label) → groups of (left, reset) → models.
+    struct Group {
+        left: f64,
+        resets_at: Option<i64>,
+        label: String,
+        models: Vec<String>,
+    }
+    let mut families: Vec<(usize, &'static str, Vec<Group>)> = Vec::new();
+    for (id, model) in models {
+        if !usable_model(id) || hidden(model) {
+            continue;
+        }
+        let Some(info) = model.get("quotaInfo").filter(|q| q.is_object()) else {
+            continue;
+        };
+        let resets_at = info
+            .get("resetTime")
+            .and_then(Value::as_str)
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t.trim()).ok())
+            .map(|t| t.timestamp_millis())
+            .filter(|at| *at > now_ms);
+        let left = match info.get("remainingFraction").and_then(Value::as_f64) {
+            Some(f) => f.clamp(0.0, 1.0),
+            // Used up: Google leaves the share out and keeps the reset.
+            None if info.get("resetTime").is_some() => 0.0,
+            None => continue,
+        };
+        let (order, family) = quota_family(id);
+        let label = model
+            .get("displayName")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or(id)
+            .to_string();
+        let at = match families.iter().position(|(o, _, _)| *o == order) {
+            Some(at) => at,
+            None => {
+                families.push((order, family, Vec::new()));
+                families.len() - 1
+            }
+        };
+        let groups = &mut families[at].2;
+        // Models in one pool report the same share and reset (to the minute).
+        let same = |g: &Group| {
+            (g.left - left).abs() < 0.0005
+                && g.resets_at.map(|t| t / 60_000) == resets_at.map(|t| t / 60_000)
+        };
+        match groups.iter_mut().find(|g| same(g)) {
+            Some(group) => group.models.push(id.clone()),
+            None => groups.push(Group {
+                left,
+                resets_at,
+                label,
+                models: vec![id.clone()],
+            }),
+        }
+    }
+    families.sort_by_key(|(order, _, _)| *order);
+    let mut out = Vec::new();
+    for (_, family, mut groups) in families {
+        let alone = groups.len() == 1;
+        groups.sort_by(|a, b| a.left.total_cmp(&b.left));
+        for group in groups {
+            let mut models = group.models;
+            models.sort();
+            out.push(super::limits::Window {
+                name: if alone {
+                    family.to_string()
+                } else {
+                    format!("{family}: {}", group.label)
+                },
+                used_percent: Some(((1.0 - group.left) * 1000.0).round() / 10.0),
+                resets_at: group.resets_at,
+                models,
+                ..Default::default()
+            });
+        }
+    }
+    out
+}
+
+/// The pool a Cloud Code model draws from, as Antigravity shares them.
+fn quota_family(id: &str) -> (usize, &'static str) {
+    let lower = id.to_ascii_lowercase();
+    if lower.starts_with("claude") || lower.starts_with("gpt") {
+        (0, "Claude and GPT")
+    } else if lower.starts_with("gemini") && lower.contains("argon") {
+        (2, "Gemini Argon")
+    } else if lower.starts_with("gemini") {
+        (1, "Gemini")
+    } else {
+        (3, "Other models")
+    }
 }
 
 /// The catalog's usable model ids: internal, disabled, image and test routes
@@ -1467,5 +1597,48 @@ mod tests {
         assert!(platform_enum() <= 5);
         assert_eq!(Client::of(Kind::Antigravity), Client::Antigravity);
         assert_eq!(Client::of(Kind::GeminiCli), Client::GeminiCli);
+    }
+
+    /// Each model's `quotaInfo` becomes a window per pool: Claude and GPT
+    /// share one, Gemini models that stand apart get one each, a used-up
+    /// model (no share, only a reset) counts as 0% left.
+    #[test]
+    fn the_catalog_says_what_each_pool_has_left() {
+        let now = 1_800_000_000_000_i64;
+        let soon = "2027-01-15T10:00:00Z";
+        let later = "2027-01-20T10:00:00Z";
+        let body = json!({"models": {
+            "claude-sonnet-5-5-high": {"displayName": "Claude Sonnet 5.5", "quotaInfo": {"remainingFraction": 0.6, "resetTime": soon}},
+            "gpt-oss-120b-medium": {"quotaInfo": {"remainingFraction": 0.6, "resetTime": soon}},
+            "gemini-3-flash": {"displayName": "Gemini 3 Flash", "quotaInfo": {"remainingFraction": 1, "resetTime": later}},
+            "gemini-4-neon-high": {"displayName": "Gemini 4 Neon", "quotaInfo": {"resetTime": soon}},
+            "gemini-4-argon-low": {"quotaInfo": {"remainingFraction": 0.25}},
+            "chat_12345": {"quotaInfo": {"remainingFraction": 0.1}},
+            "gemini-2.5-flash-lite": {"displayName": "Lite"}
+        }})
+        .to_string();
+        let windows = parse_quota_windows(&body, now);
+        let names: Vec<&str> = windows.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Claude and GPT",
+                "Gemini: Gemini 4 Neon",
+                "Gemini: Gemini 3 Flash",
+                "Gemini Argon"
+            ]
+        );
+        assert_eq!(windows[0].used_percent, Some(40.0));
+        assert_eq!(
+            windows[0].models,
+            ["claude-sonnet-5-5-high", "gpt-oss-120b-medium"]
+        );
+        assert!(windows[0].resets_at.is_some_and(|at| at > now));
+        assert_eq!(windows[1].used_percent, Some(100.0));
+        assert_eq!(windows[2].used_percent, Some(0.0));
+        assert_eq!(windows[3].used_percent, Some(75.0));
+        assert_eq!(windows[3].resets_at, None);
+        assert!(parse_quota_windows("{}", now).is_empty());
+        assert!(parse_quota_windows("not json", now).is_empty());
     }
 }

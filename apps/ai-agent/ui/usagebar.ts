@@ -11,6 +11,7 @@ import { openPopover, type Popover } from "./popover";
 import {
   chatStats,
   contextWindow,
+  countedFigures,
   formatTokens,
   leftTone,
   shownAccount,
@@ -87,8 +88,8 @@ export function createUsageBar(ctx: AppContext, source: UsageBarSource): UsageBa
 
     const provider = data?.providers.find((p) => p.id === source.providerId());
     const account = provider ? shownAccount(provider, now) : null;
-    const bars = account ? usageBars(account, now) : [];
-    quota.classList.toggle("hidden", !provider || !bars.length);
+    const bars = account ? usageBars(account, now, model) : [];
+    quota.classList.toggle("hidden", !provider || !account);
     if (provider && bars.length) {
       quotaText.replaceChildren(
         h("span", { class: "ai-usage-quota-name" }, provider.name),
@@ -98,6 +99,17 @@ export function createUsageBar(ctx: AppContext, source: UsageBarSource): UsageBa
         ]),
       );
       quota.title = `${provider.name}: ${bars.map((b) => `${b.name} ${b.used}% used${b.resetsAt ? `, resets in ${timeLeft(b.resetsAt - now)}` : ""}`).join("; ")}`;
+    } else if (provider && account) {
+      // A provider that reports no limits: what RAST counted for it.
+      const figures = countedFigures(account).filter((f) => f.key !== "day");
+      quotaText.replaceChildren(
+        h("span", { class: "ai-usage-quota-name" }, provider.name),
+        ...figures.flatMap((f, i) => [
+          ...(i ? [h("span", { class: "ai-usage-sep" }, "·")] : []),
+          h("span", { class: "ai-usage-quota-bar is-none" }, `${f.short} ${formatTokens(f.tokens)} tok`),
+        ]),
+      );
+      quota.title = `${provider.name}, counted by RAST: ${figures.map((f) => `${f.name.toLowerCase()} ${formatTokens(f.tokens)} tokens in ${f.calls} call${f.calls === 1 ? "" : "s"}`).join("; ")}`;
     }
     el.classList.toggle("hidden", Array.from(el.children).every((c) => c.classList.contains("hidden")));
     if (popover) drawPopover();
@@ -122,16 +134,22 @@ export function createUsageBar(ctx: AppContext, source: UsageBarSource): UsageBa
     if (!popover) return;
     const now = Date.now();
     const current = source.providerId();
+    const model = chatStats(source.messages()).model || source.model();
     const providers = (data?.providers ?? [])
-      .map((p) => ({ provider: p, accounts: p.accounts.filter((a) => usageBars(a, now).length) }))
       .filter((p) => p.accounts.length)
+      .map((p) => {
+        const reporting = p.accounts.filter((a) => usageBars(a, now).length);
+        return { provider: p, accounts: reporting.length ? reporting : p.accounts, counted: !reporting.length };
+      })
       .sort((a, b) => Number(b.provider.id === current) - Number(a.provider.id === current));
     const checked = Math.max(0, ...(data?.providers ?? []).flatMap((p) => p.accounts.map((a) => a.quota.checkedAt ?? 0)));
     popover.el.replaceChildren(
       h("div", { class: "ai-qp-head" }, iconSvg("gauge", 15), h("strong", {}, "Usage limits")),
       ...(providers.length
-        ? providers.map(({ provider, accounts }) => providerBlock(provider, accounts, provider.id === current, now))
-        : [h("p", { class: "small muted ai-qp-empty" }, "The providers you use have not reported limits yet. They show here after a reply.")]),
+        ? providers.map(({ provider, accounts, counted }) =>
+            providerBlock(provider, accounts, provider.id === current, now, provider.id === current ? model : "", counted),
+          )
+        : [h("p", { class: "small muted ai-qp-empty" }, "The providers you may chat with show here.")]),
       ...(checked ? [h("div", { class: "ai-qp-foot small muted" }, `Reported ${agoText(now - checked)}`)] : []),
     );
     popover.place();
@@ -176,7 +194,14 @@ function barText(bar: UsageBar, now: number): string {
   return bar.resetsAt ? `${timeLeft(bar.resetsAt - now)} ${bar.used}%` : `${bar.used}%`;
 }
 
-function providerBlock(provider: ChatQuotaProvider, accounts: ChatQuotaAccount[], current: boolean, now: number): HTMLElement {
+function providerBlock(
+  provider: ChatQuotaProvider,
+  accounts: ChatQuotaAccount[],
+  current: boolean,
+  now: number,
+  model: string,
+  counted: boolean,
+): HTMLElement {
   const shown = shownAccount(provider, now);
   const several = accounts.length > 1;
   const who = (account: ChatQuotaAccount) => {
@@ -199,8 +224,20 @@ function providerBlock(provider: ChatQuotaProvider, accounts: ChatQuotaAccount[]
     ),
     ...accounts.flatMap((account, i) => [
       several ? h("div", { class: "ai-qp-account" }, who(account) ?? h("span", { class: "ai-qp-who" }, `Account ${i + 1}`)) : null,
-      ...usageBars(account, now).map((bar) => barRow(bar, now)),
+      ...(counted ? countedRows(account) : usageBars(account, now, model).map((bar) => barRow(bar, now))),
     ]),
+    counted ? h("div", { class: "ai-qp-note small muted" }, "Counted by RAST from the chats on this server.") : null,
+  );
+}
+
+function countedRows(account: ChatQuotaAccount): HTMLElement[] {
+  return countedFigures(account).map((f) =>
+    h(
+      "div",
+      { class: "ai-qp-count" },
+      h("span", { class: "ai-qp-name" }, f.name),
+      h("span", { class: "ai-qp-value" }, `${formatTokens(f.tokens)} tok · ${f.calls} call${f.calls === 1 ? "" : "s"}`),
+    ),
   );
 }
 

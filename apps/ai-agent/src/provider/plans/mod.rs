@@ -118,6 +118,32 @@ pub fn catalog(
     }
 }
 
+/// Whether the plan says on demand what an account has left ([`quota`]).
+pub fn reports_quota(kind: Kind) -> bool {
+    matches!(kind, Kind::Codex | Kind::Antigravity | Kind::GeminiCli)
+}
+
+/// What a signed-in account has left, asked now (blocking HTTP): the windows
+/// and the plan's name when it says. `None` for a plan that does not say.
+pub fn quota(
+    kind: Kind,
+    base_url: &str,
+    token: &str,
+    account: &str,
+    now_ms: i64,
+) -> Option<Result<(Vec<super::limits::Window>, String), String>> {
+    Some(match kind {
+        Kind::Codex => codex::codex_usage(base_url, token, account, now_ms),
+        Kind::Antigravity => {
+            antigravity::quota(base_url, token, account, now_ms).map(|w| (w, String::new()))
+        }
+        Kind::GeminiCli => {
+            gemini_cli::quota(base_url, token, account, now_ms).map(|w| (w, String::new()))
+        }
+        _ => return None,
+    })
+}
+
 /// Models a plan offers when its catalog cannot be read (empty: none).
 pub fn fallback_models(kind: Kind) -> &'static [&'static str] {
     match kind {

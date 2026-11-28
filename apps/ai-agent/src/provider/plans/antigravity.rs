@@ -150,6 +150,22 @@ pub(crate) fn catalog(base_url: &str, token: &str, account: &str) -> Result<Vec<
     )
 }
 
+/// What the account has left: the same catalog's `quotaInfo` per model.
+pub(crate) fn quota(
+    base_url: &str,
+    token: &str,
+    account: &str,
+    now_ms: i64,
+) -> Result<Vec<super::super::limits::Window>, String> {
+    cloud_code::fetch_quota(
+        &chat_base(base_url),
+        token,
+        account,
+        &extra_headers("", "", account),
+        now_ms,
+    )
+}
+
 pub(crate) fn fallback_models() -> &'static [&'static str] {
     MODELS
 }
