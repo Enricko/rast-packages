@@ -32,6 +32,8 @@ const KEEP: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const RUN_SECS: u32 = 120;
 /// Where Ubuntu's LibreOffice keeps what each part brings.
 const REGISTRY: &str = "/usr/lib/libreoffice/share/registry";
+/// There when the LibreOffice installed is the build without a desktop.
+const NOGUI_CORE: &str = "/usr/share/doc/libreoffice-core-nogui";
 
 /// Conversions at a time (each one is a whole LibreOffice).
 static RUNNING: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(2));
@@ -55,12 +57,19 @@ impl Family {
         }
     }
 
-    /// The package that adds this part.
-    fn package(self) -> &'static str {
-        match self {
-            Self::Text => "libreoffice-writer-nogui",
-            Self::Sheet => "libreoffice-calc-nogui",
-            Self::Slides => "libreoffice-impress-nogui",
+    /// The package that adds this part, of the same build as the
+    /// LibreOffice there (the `-nogui` parts and the others replace each
+    /// other's core).
+    fn package(self, nogui: bool) -> String {
+        let part = match self {
+            Self::Text => "libreoffice-writer",
+            Self::Sheet => "libreoffice-calc",
+            Self::Slides => "libreoffice-impress",
+        };
+        if nogui {
+            format!("{part}-nogui")
+        } else {
+            part.to_string()
         }
     }
 
@@ -152,7 +161,7 @@ pub async fn to_pdf(
         return Err(format!(
             "This server's LibreOffice opens no {} yet (an administrator can add it: sudo apt install {})",
             family.what(),
-            family.package()
+            family.package(Path::new(NOGUI_CORE).exists())
         ));
     }
     let _turn = RUNNING
@@ -413,6 +422,8 @@ mod tests {
         ));
         assert!(!looks_like("doc", b"PK\x03\x04"));
         assert!(looks_like("rtf", b"{\\rtf1\\ansi"));
+        assert_eq!(Family::Sheet.package(false), "libreoffice-calc");
+        assert_eq!(Family::Slides.package(true), "libreoffice-impress-nogui");
     }
 
     #[test]

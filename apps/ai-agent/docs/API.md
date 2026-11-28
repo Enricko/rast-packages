@@ -315,9 +315,10 @@ them.
   capabilities, 1 GiB, 2 minutes, two at a time. The document goes in on the
   unit's standard input and the PDF comes out on its standard output, so the
   unit opens no file of the server.
-- Text documents need `libreoffice-writer-nogui` (or Writer), spreadsheets
-  `libreoffice-calc-nogui`, slides `libreoffice-impress-nogui`; a missing
-  part says which package adds it.
+- Text documents need LibreOffice Writer, spreadsheets Calc, slides Impress
+  (`libreoffice-writer`/`-calc`/`-impress`, or their `-nogui` builds on a
+  server without a desktop); a missing part names the package of the same
+  build as the LibreOffice there.
 - A PDF is kept per account under the app's data (`converted/<account>/
   <sha256>.pdf`) for a week from its last use, so the same document opens at
   once.
