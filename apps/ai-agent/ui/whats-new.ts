@@ -11,6 +11,15 @@ export interface Release {
 
 export const WHATS_NEW: Release[] = [
   {
+    version: "1.7.0",
+    date: "2026-11-28",
+    items: [
+      "Workspaces: pick a folder and the chat works there. Its file tools stay inside it, commands start in it, and the list shows that workspace's chats.",
+      "The bar under the message box shows every provider's limits, and what RAST counted for providers that report none.",
+      "The agent can open your apps: Code Editor at a file and line, File Station at a folder, and more. Ask AI in other apps starts a chat here with their text.",
+    ],
+  },
+  {
     version: "1.6.0",
     date: "2026-11-28",
     items: [

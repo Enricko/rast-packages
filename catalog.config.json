@@ -416,7 +416,10 @@
       "license": "MIT",
       "keepPatches": 2,
       "githubAttestations": true,
-      "releaseRepos": ["Enricko/rast-packages", "Enricko/rast"],
+      "releaseRepos": [
+        "Enricko/rast-packages",
+        "Enricko/rast"
+      ],
       "minRastVersion": "0.9.17",
       "app": {
         "id": "agent",
@@ -443,6 +446,623 @@
         {
           "id": "stable",
           "label": "AI Agent",
+          "status": "stable"
+        }
+      ]
+    },
+    "code-editor": {
+      "name": "Code Editor",
+      "description": "RAST's Code Editor: edit the code and text files in your RAST files with CodeMirror 6 (45 languages, search and replace, find a file, multiple cursors). Changes made elsewhere, such as by AI Agent, show as they happen. Built and attested by this repository's code-editor workflow (apps/code-editor).",
+      "homepage": "https://github.com/Enricko/rast-packages/tree/main/apps/code-editor",
+      "license": "MIT",
+      "icon": "icons/code-editor.svg",
+      "keepPatches": 2,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "code",
+        "window": {
+          "entry": "ui/app.js",
+          "styles": [
+            "ui/app.css"
+          ],
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1100,
+            "h": 720
+          },
+          "minSize": {
+            "w": 420,
+            "h": 320
+          },
+          "opens": [
+            "text",
+            ".mts",
+            ".cts",
+            ".jsonc",
+            ".json5",
+            ".xhtml",
+            ".vue",
+            ".svelte",
+            ".astro",
+            ".scss",
+            ".sass",
+            ".less",
+            ".pyi",
+            ".php",
+            ".kt",
+            ".kts",
+            ".cs",
+            ".scala",
+            ".sbt",
+            ".dart",
+            ".swift",
+            ".lua",
+            ".rb",
+            ".rake",
+            ".gemspec",
+            ".r",
+            ".rmd",
+            ".pl",
+            ".pm",
+            ".diff",
+            ".patch",
+            ".cmake",
+            ".proto",
+            ".hs",
+            ".erl",
+            ".jl",
+            ".groovy",
+            ".gradle",
+            ".clj",
+            ".cljs",
+            ".edn",
+            ".lisp",
+            ".el",
+            ".ml",
+            ".mli",
+            ".fsx",
+            ".glsl",
+            ".wgsl",
+            ".hlsl",
+            ".vert",
+            ".frag",
+            ".ps1",
+            ".svg",
+            ".ksh",
+            ".fish",
+            ".dockerfile",
+            ".properties",
+            ".cc",
+            ".cxx",
+            ".hh",
+            ".hxx",
+            ".ino",
+            ".mm",
+            ".cu"
+          ]
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "Code Editor",
+          "status": "stable"
+        }
+      ]
+    },
+    "photocraft": {
+      "name": "PhotoCraft",
+      "description": "Photo editor with layers, masks and filters. ArtCraft's PhotoCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/photocraft",
+      "license": "Apache-2.0",
+      "icon": "icons/photocraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "photocraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1280,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "PhotoCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "pdfcraft": {
+      "name": "PdfCraft",
+      "description": "Read, annotate and edit PDF documents. ArtCraft's PdfCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/pdfcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/pdfcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "pdfcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1180,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "PdfCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "filmcraft": {
+      "name": "FilmCraft",
+      "description": "Nonlinear video editor. ArtCraft's FilmCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/filmcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/filmcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "filmcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1280,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "FilmCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "wordcraft": {
+      "name": "WordCraft",
+      "description": "Word processor for documents and letters. ArtCraft's WordCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/wordcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/wordcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "wordcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1100,
+            "h": 800
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "WordCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "lightcraft": {
+      "name": "LightCraft",
+      "description": "Non-destructive photo developing and retouching. ArtCraft's LightCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/lightcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/lightcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "lightcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1280,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "LightCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "vectorcraft": {
+      "name": "VectorCraft",
+      "description": "Vector illustration and graphics. ArtCraft's VectorCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/vectorcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/vectorcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "vectorcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1280,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "VectorCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "effectcraft": {
+      "name": "EffectCraft",
+      "description": "Motion graphics and compositing. ArtCraft's EffectCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/effectcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/effectcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "effectcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1280,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "EffectCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "cadcraft": {
+      "name": "CADCraft",
+      "description": "Computer-aided design and drafting. ArtCraft's CADCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://github.com/storytold/cadcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/cadcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "cadcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1280,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "CADCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "gridcraft": {
+      "name": "GridCraft",
+      "description": "Spreadsheets with formulas and charts. ArtCraft's GridCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://github.com/storytold/gridcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/gridcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "gridcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1200,
+            "h": 800
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "GridCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "figcraft": {
+      "name": "FigCraft",
+      "description": "Interface design and prototyping. ArtCraft's FigCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/figcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/figcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "figcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1280,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "FigCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "designcraft": {
+      "name": "DesignCraft",
+      "description": "Page and layout design. ArtCraft's DesignCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/designcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/designcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "designcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1280,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "DesignCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "deckcraft": {
+      "name": "DeckCraft",
+      "description": "Presentations and slide shows. ArtCraft's DeckCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/slidecraft",
+      "license": "Apache-2.0",
+      "icon": "icons/deckcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "deckcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1200,
+            "h": 800
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "DeckCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "soundcraft": {
+      "name": "SoundCraft",
+      "description": "Digital audio workstation for recording and mixing. ArtCraft's SoundCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/soundcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/soundcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "soundcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1280,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "SoundCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "texturecraft": {
+      "name": "TextureCraft",
+      "description": "3D texture painting. ArtCraft's TextureCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/texturecraft",
+      "license": "Apache-2.0",
+      "icon": "icons/texturecraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "texturecraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1280,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "TextureCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "materialcraft": {
+      "name": "MaterialCraft",
+      "description": "Node-based material designer for tileable textures. ArtCraft's MaterialCraft (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://getartcraft.com/apps/materialcraft",
+      "license": "Apache-2.0",
+      "icon": "icons/materialcraft.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "materialcraft",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1280,
+            "h": 820
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "MaterialCraft",
+          "status": "stable"
+        }
+      ]
+    },
+    "craft-anything": {
+      "name": "Craft Anything",
+      "description": "Drop a file to learn what it is, what it runs on and what made it. ArtCraft's Craft Anything (open source, Apache-2.0), its web version in a sandboxed window: open files from your device and save them as downloads. Packaged from upstream's signed release by this repository's craft-web workflow.",
+      "homepage": "https://github.com/storytold/craft-anything",
+      "license": "Apache-2.0",
+      "icon": "icons/craft-anything.png",
+      "keepPatches": 1,
+      "githubAttestations": true,
+      "releaseRepos": [
+        "Enricko/rast-packages"
+      ],
+      "minRastVersion": "0.9.19",
+      "app": {
+        "id": "craft-anything",
+        "window": {
+          "entry": "web/index.html",
+          "sdk": 1,
+          "singleton": true,
+          "defaultSize": {
+            "w": 1100,
+            "h": 740
+          }
+        }
+      },
+      "channels": [
+        {
+          "id": "stable",
+          "label": "Craft Anything",
           "status": "stable"
         }
       ]

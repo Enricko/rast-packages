@@ -7,6 +7,46 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-28
+
+### Added
+
+- **Workspaces.** A workspace is a folder of the person's RAST files, or for
+  administrators a folder on the server. The chat list shows one
+  workspace's chats or all of them, a new chat starts in the one shown,
+  and the chip under the message box moves a chat to another. In a
+  workspace the file tools reach only inside its folder (a relative path
+  is inside it), commands start in it, and the model is told about it: its
+  top-level entries and its notes (AGENTS.md, CLAUDE.md or README.md).
+  Removing a workspace keeps its chats and the folder. agent.db migration
+  0004.
+- **The agent opens RAST apps.** A new `open_app` tool opens an app the
+  person may open: Code Editor at a file and line, File Station at a
+  folder, or any other app. It changes nothing, so it runs without asking;
+  the page that sent the message opens the app, and the step's card has
+  Open to open it again. The model is told which apps the account may open
+  (RAST's host API `GET /v1/users/{id}/apps` from RAST 0.9.19, else the
+  built-in apps).
+- **Ask AI from other apps.** The window parameter `{ ask }` starts a new
+  chat with that text in the message box, for the person to finish and
+  send (RAST's apps and Code Editor use it). File cards offer "Open in
+  <app>" for the apps that open that kind of file.
+
+### Changed
+
+- **The usage bar shows every provider's limits.** Antigravity and Gemini
+  CLI accounts say what each pool of models has left (the catalog's
+  `quotaInfo`), OpenRouter keys their limit and credits, and the bar asks
+  again for accounts last told over two minutes ago. A provider that
+  reports no limits shows what RAST counted for it (last 5 hours, 24
+  hours, 7 days). The chat model's pool comes first.
+
+### Fixed
+
+- The window keeps what the events said when a reply (or a refusal) ends
+  before the request that started it answers: it stayed on "Thinking"
+  before.
+
 ## [1.6.0] - 2026-11-28
 
 ### Added
