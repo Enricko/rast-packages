@@ -136,8 +136,9 @@ pub fn reads(input: &Value) -> bool {
 }
 
 /// `use_app`, naming the apps whose windows may take commands (`pictures`:
-/// the model reads the window pictures).
-pub fn spec(apps: &[HostApp], pictures: bool) -> Option<ToolSpec> {
+/// the model reads the window pictures; `server`: it works in the apps'
+/// windows on the server, [`super::app_window`]).
+pub fn spec(apps: &[HostApp], pictures: bool, server: bool) -> Option<ToolSpec> {
     let apps: Vec<&HostApp> = apps.iter().filter(|app| app.commands).collect();
     if apps.is_empty() {
         return None;
@@ -153,10 +154,15 @@ pub fn spec(apps: &[HostApp], pictures: bool) -> Option<ToolSpec> {
     } else {
         "a picture of the window, shown to the person in the chat (you get only its description)"
     };
+    let window = if server {
+        "Work inside one of the person's RAST apps, in a window of it that runs on the server for this chat, as the person would: read what it shows, run its commands, type into it. It keeps working when the person closes RAST; they see its pictures in the chat. It works on what the window has open: to work on one of the person's files, open it first with open_app and the file's path (otherwise the app starts a new document). Changes stay in the window until it saves: run its save command when the work is done or the person wants the file saved (Save writes the open file back to their files; Save As and exports go into the open file's folder). The window closes 30 minutes after the chat's reply ends, and what it has not saved goes with it."
+    } else {
+        "Work inside one of the person's RAST apps, in its window beside this chat, as the person would: read what it shows, run its commands, type into it. It works on what the window has open: to work on one of the person's files, open it first with open_app and the file's path. Changes stay in the app until it saves: run its save command when the person wants the file saved (Save writes the open file back to their files; Save As and exports ask the person where)."
+    };
     Some(ToolSpec {
         name: tools::USE_APP.into(),
         description: format!(
-            "Work inside one of the person's RAST apps, in its window beside this chat, as the person would: read what it shows, run its commands, type into it. It works on what the window has open: to work on one of the person's files, open it first with open_app and the file's path. Changes stay in the app until it saves: run its save command when the person wants the file saved (Save writes the open file back to their files; Save As and exports ask the person where). Methods (the app's control channel):\n\
+            "{window} Methods (the app's control channel):\n\
 - engine.commands {{search?}}: the app's commands (id, label, params, enabled); search with a word, e.g. \"insert\", since the full list is long\n\
 - engine.execute {{command, params?}}: run a command by its id (WordCraft: text.insert {{text}}, file.save)\n\
 - document.inspect {{text?}}: what the open document holds\n\
@@ -307,8 +313,22 @@ pub async fn run(
             ))
         }
     };
+    shape(state, user, conversation, app, &methods, batch, result).await
+}
+
+/// What the app answered (a series': `{"batch": [{ok, result | error}, …]}`)
+/// as the model and the person read it, its last picture kept in the chat.
+pub async fn shape(
+    state: &Agent,
+    user: &AuthUser,
+    conversation: &str,
+    app: &HostApp,
+    methods: &[Method],
+    batch: bool,
+    result: Value,
+) -> Result<Output, String> {
     let (text, png, ran) = if batch {
-        series_text(&app.name, &methods, &result)?
+        series_text(&app.name, methods, &result)?
     } else {
         let mut result = result;
         let png = take_png(&mut result);
@@ -479,12 +499,12 @@ mod tests {
 
     #[test]
     fn only_apps_that_take_commands_are_offered() {
-        assert!(spec(&[app("files", "File Station", false)], false).is_none());
+        assert!(spec(&[app("files", "File Station", false)], false, false).is_none());
         let apps = [
             app("files", "File Station", false),
             app("wordcraft", "WordCraft", true),
         ];
-        let spec = spec(&apps, false).unwrap();
+        let spec = spec(&apps, false, false).unwrap();
         assert_eq!(spec.name, "use_app");
         assert!(spec.description.contains("you get only its description"));
         assert!(spec
@@ -548,7 +568,7 @@ mod tests {
             apps: apps.to_vec(),
             ..Available::default()
         };
-        let spec = spec(&apps, true).unwrap();
+        let spec = spec(&apps, true, false).unwrap();
         assert!(spec.description.contains("you see it right after"));
         assert!(spec.description.contains("up to 50 run in order"));
         assert_eq!(spec.parameters["required"], json!(["app"]));

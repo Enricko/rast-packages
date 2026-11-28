@@ -545,6 +545,8 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     if (message.role !== "assistant" || !startedHere.has(conversationId)) return;
     for (const block of message.content) {
       if (block.type !== "tool" || block.name !== "use_app" || block.status !== "running") continue;
+      // The app's window on the server does it.
+      if (block.server) continue;
       const key = `${conversationId}:${block.id}`;
       if (ranCalls.has(key)) continue;
       ranCalls.add(key);
@@ -606,7 +608,8 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     ctx.openApp(target.app, target.params);
   }
 
-  /** Bring forward the app the agent works in. */
+  /** Bring forward the app the agent works in (on the server: the file its
+   * window there has open, as last saved). */
   function showApp(block: ToolBlock): void {
     const call = useAppCall(block);
     if (!call) return;
@@ -614,7 +617,8 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       ctx.toast.warning(`${appName(call.app)} is not available to this account.`);
       return;
     }
-    ctx.openApp(call.app);
+    if (block.server && block.document) ctx.openApp(call.app, { path: block.document });
+    else ctx.openApp(call.app);
   }
 
   /** Open the apps the agent asked for in a reply this page started. */
@@ -626,7 +630,9 @@ function mountAgentApp(ctx: AppContext): AppInstance {
         if (block.type !== "tool" || block.name !== "open_app" || seenOpens.has(block.id)) continue;
         if (block.status !== "done" && block.status !== "error" && block.status !== "denied" && block.status !== "skipped") continue;
         seenOpens.add(block.id);
-        if (block.status === "done" && here) openAppFrom(block);
+        // A file opened in an app's window on the server stays there: the
+        // person opens it from the card.
+        if (block.status === "done" && here && !block.server) openAppFrom(block);
       }
     }
   }
@@ -1751,12 +1757,17 @@ function mountAgentApp(ctx: AppContext): AppInstance {
               h("span", {}, "Open"),
             )
           : null,
-        block.name === "use_app" && (block.status === "done" || block.status === "running")
+        block.name === "use_app" && (block.status === "done" || block.status === "running") && (!block.server || block.document)
           ? h(
               "button",
-              { class: "btn btn-ghost btn-sm ai-tool-view", type: "button", title: "Show the app", onClick: () => showApp(block) },
+              {
+                class: "btn btn-ghost btn-sm ai-tool-view",
+                type: "button",
+                title: block.server ? `Open ${block.document} as last saved` : "Show the app",
+                onClick: () => showApp(block),
+              },
               iconSvg("external", 13),
-              h("span", {}, "Show"),
+              h("span", {}, block.server ? "Open" : "Show"),
             )
           : null,
         viewable(block)

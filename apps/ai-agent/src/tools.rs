@@ -173,6 +173,10 @@ pub struct Available {
     pub apps: Vec<super::host::HostApp>,
     /// The model reads pictures (an app window's, from `use_app`).
     pub pictures: bool,
+    /// `use_app` (and `open_app` of an app that takes commands, with a
+    /// file) works in the apps' windows on the server
+    /// ([`super::app_window`]), not in the person's page.
+    pub server_apps: bool,
 }
 
 impl Available {
@@ -226,9 +230,9 @@ impl Available {
             .iter()
             .filter_map(|name| {
                 if *name == OPEN_APP {
-                    open_app_spec(&self.apps)
+                    open_app_spec(&self.apps, self.server_apps && self.has(USE_APP))
                 } else if *name == USE_APP {
-                    super::use_app::spec(&self.apps, self.pictures)
+                    super::use_app::spec(&self.apps, self.pictures, self.server_apps)
                 } else {
                     spec(name, self.shell, self.guarded)
                 }
@@ -281,12 +285,13 @@ pub async fn available(state: &Agent, user: &AuthUser) -> Available {
     }
     if out.apps.iter().any(|app| app.commands) {
         out.names.push(USE_APP);
+        out.server_apps = super::app_window::available(state).await;
     }
     out
 }
 
 /// `open_app`, naming the apps the account may open.
-pub fn open_app_spec(apps: &[super::host::HostApp]) -> Option<ToolSpec> {
+pub fn open_app_spec(apps: &[super::host::HostApp], server: bool) -> Option<ToolSpec> {
     if apps.is_empty() {
         return None;
     }
@@ -316,7 +321,12 @@ pub fn open_app_spec(apps: &[super::host::HostApp]) -> Option<ToolSpec> {
     Some(ToolSpec {
         name: OPEN_APP.into(),
         description: format!(
-            "Open one of the person's RAST apps in a window beside this chat, to show them something there: Code Editor at a file and line you wrote or are talking about, File Station at a folder, or another app. It only opens the window (reading and changing nothing), and only when the person would want it: when they ask, or to show a result. The apps they may open:\n{list}"
+            "Open one of the person's RAST apps in a window beside this chat, to show them something there: Code Editor at a file and line you wrote or are talking about, File Station at a folder, or another app. It only opens the window (reading and changing nothing), and only when the person would want it: when they ask, or to show a result.{server}The apps they may open:\n{list}",
+            server = if server {
+                " An app you work in with use_app runs in a window on the server: open_app opens it there (with a file: the file), for use_app to work on; the person opens the file themselves from the chat. "
+            } else {
+                " "
+            }
         ),
         parameters: schema(
             json!({
@@ -681,6 +691,31 @@ pub async fn execute(
     }
     if name == BROWSER {
         return browser::act(state, user, conversation, input).await;
+    }
+    if name == OPEN_APP && available.server_apps && available.has(USE_APP) {
+        let text = open_app(available, input)?;
+        let app_id = input
+            .get("app")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let path = input
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty());
+        // An app that takes commands opens in its window on the server; the
+        // others beside the chat, in the person's page.
+        if let Some(app) = available
+            .apps
+            .iter()
+            .find(|app| app.id == app_id && app.commands)
+        {
+            return super::app_window::open(state, user, conversation, app, path)
+                .await
+                .map(Output::from);
+        }
+        return Ok(Output::from(text));
     }
     run_tool(state, user, available, name, input)
         .await
@@ -1801,8 +1836,8 @@ mod tests {
             app("files", "File Station", &[]),
             app("code", "Code Editor", &["text", ".py"]),
         ];
-        assert!(open_app_spec(&[]).is_none());
-        let spec = open_app_spec(&apps).unwrap();
+        assert!(open_app_spec(&[], false).is_none());
+        let spec = open_app_spec(&apps, false).unwrap();
         assert!(spec.description.contains(
             "- files (File Station): File Station does things. path: the folder to show"
         ));
@@ -1856,9 +1891,12 @@ mod tests {
             open_app(&available, &json!({"app": "photocraft"})).unwrap(),
             "PhotoCraft is open beside the chat."
         );
-        assert!(open_app_spec(&[photo]).unwrap().description.contains(
-            "- photocraft (PhotoCraft): PhotoCraft does things. Work in it with use_app"
-        ));
+        assert!(open_app_spec(&[photo], false)
+            .unwrap()
+            .description
+            .contains(
+                "- photocraft (PhotoCraft): PhotoCraft does things. Work in it with use_app"
+            ));
         assert_eq!(
             summary(OPEN_APP, &json!({"app": "code", "path": "/a.py"})),
             "open_app: code /a.py"

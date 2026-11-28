@@ -39,7 +39,7 @@ use tokio::{
         unix::{OwnedReadHalf, OwnedWriteHalf},
         TcpListener, TcpStream, UnixListener, UnixStream,
     },
-    sync::{oneshot, OnceCell, Semaphore},
+    sync::{mpsc, oneshot, OnceCell, Semaphore},
 };
 use uuid::Uuid;
 
@@ -238,9 +238,70 @@ impl Drop for SocketFile {
     }
 }
 
+/// How one Chrome starts: the browser tool's, or an app's window on the
+/// server ([`super::app_window`]).
+pub(crate) struct Launch {
+    /// The systemd unit's name starts with it.
+    pub unit: &'static str,
+    pub description: &'static str,
+    pub proxy_port: u16,
+    pub memory: &'static str,
+    pub lifetime_secs: u32,
+    /// Its share of the CPU, as a unit property (`CPUQuota=200%`,
+    /// `CPUWeight=20`).
+    pub cpu: &'static str,
+    pub window: (u32, u32),
+    /// Chrome's flags beyond the common ones.
+    pub flags: &'static [&'static str],
+    /// The longest DevTools message Chrome may send.
+    pub max_message: usize,
+}
+
+impl Launch {
+    async fn browser() -> Result<Self, String> {
+        Ok(Self {
+            unit: "rast-browser",
+            description: "RAST agent browser",
+            proxy_port: proxy_port().await?,
+            memory: "1G",
+            lifetime_secs: LIFETIME_SECS,
+            cpu: "CPUQuota=200%",
+            window: (1280, 800),
+            flags: &[],
+            max_message: MAX_MESSAGE,
+        })
+    }
+}
+
 async fn start(state: &Agent, user: &AuthUser) -> Result<Session, String> {
+    let cdp = launch(state, user, &Launch::browser().await?).await?;
+    let page = prepare(&cdp).await.map_err(|e| started_wrong(&cdp, &e))?;
+    let session = Session {
+        cdp,
+        page,
+        last_used: AtomicI64::new(0),
+        busy: tokio::sync::Mutex::new(()),
+    };
+    session.touch();
+    Ok(session)
+}
+
+/// Why a Chrome that started answered wrong.
+pub(crate) fn started_wrong(cdp: &Cdp, error: &str) -> String {
+    if cdp.is_closed() {
+        "Chrome stopped while starting (on Ubuntu, Google Chrome's own .deb brings the AppArmor profile its sandbox needs)".to_string()
+    } else {
+        format!("the browser did not start: {error}")
+    }
+}
+
+/// Start one Chrome in its unit (see the module docs) and connect to it.
+pub(crate) async fn launch(
+    state: &Agent,
+    user: &AuthUser,
+    launch: &Launch,
+) -> Result<Arc<Cdp>, String> {
     let chrome = chrome().ok_or(NO_CHROME)?;
-    let port = proxy_port().await?;
     let dir = state.data_dir().join("browser");
     std::fs::create_dir_all(&dir)
         .and_then(|_| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)))
@@ -258,9 +319,9 @@ async fn start(state: &Agent, user: &AuthUser) -> Result<Session, String> {
         .map_err(|e| e.to_string())?;
     let script = launch_script(
         chrome,
-        &format!("rast-browser-{id}"),
+        &format!("{}-{id}", launch.unit),
         &socket.0,
-        port,
+        launch,
         &guard::hidden_paths(state.host.private_paths()),
     )?;
     let output = state
@@ -288,22 +349,7 @@ async fn start(state: &Agent, user: &AuthUser) -> Result<Session, String> {
         .map_err(|e| format!("the browser did not start: {e}"))?;
     drop(listener);
     drop(socket);
-    let cdp = Cdp::start(stream);
-    let page = prepare(&cdp).await.map_err(|e| {
-        if cdp.is_closed() {
-            "Chrome stopped while starting (on Ubuntu, Google Chrome's own .deb brings the AppArmor profile its sandbox needs)".to_string()
-        } else {
-            format!("the browser did not start: {e}")
-        }
-    })?;
-    let session = Session {
-        cdp,
-        page,
-        last_used: AtomicI64::new(0),
-        busy: tokio::sync::Mutex::new(()),
-    };
-    session.touch();
-    Ok(session)
+    Ok(Cdp::start(stream, launch.max_message))
 }
 
 /// Pages that open a window go to it in the same tab instead.
@@ -375,7 +421,7 @@ fn launch_script(
     chrome: &str,
     unit: &str,
     socket: &Path,
-    proxy_port: u16,
+    launch: &Launch,
     hidden: &[PathBuf],
 ) -> Result<String, String> {
     let socket = socket.to_string_lossy();
@@ -392,7 +438,6 @@ fn launch_script(
         "--collect",
         "--service-type=exec",
         "--expand-environment=no",
-        "--description=RAST agent browser",
         "--property=User=nobody",
         "--property=Group=nogroup",
         "--property=ProtectSystem=strict",
@@ -415,9 +460,7 @@ fn launch_script(
         // Only the proxy, on 127.0.0.1: see the module docs.
         "--property=IPAddressDeny=any",
         "--property=IPAddressAllow=127.0.0.1/32",
-        "--property=MemoryMax=1G",
         "--property=TasksMax=512",
-        "--property=CPUQuota=200%",
         "--property=TimeoutStopSec=5",
         "--property=WorkingDirectory=/tmp",
         "--property=Environment=HOME=/tmp LANG=C.UTF-8",
@@ -427,7 +470,10 @@ fn launch_script(
     .map(|s| s.to_string())
     .collect();
     args.push(format!("--unit={unit}"));
-    args.push(format!("--property=RuntimeMaxSec={LIFETIME_SECS}"));
+    args.push(format!("--description={}", launch.description));
+    args.push(format!("--property=MemoryMax={}", launch.memory));
+    args.push(format!("--property={}", launch.cpu));
+    args.push(format!("--property=RuntimeMaxSec={}", launch.lifetime_secs));
     // One connection for both directions (systemd connects to the socket).
     args.push(format!("--property=StandardInput=file:{socket}"));
     args.push(format!("--property=StandardOutput=file:{socket}"));
@@ -443,7 +489,7 @@ fn launch_script(
         }
         args.push(format!("--property=InaccessiblePaths=\"-{text}\""));
     }
-    let chrome_args: Vec<String> = [
+    let mut chrome_args: Vec<String> = [
         chrome.to_string(),
         "--headless=new".into(),
         "--remote-debugging-pipe".into(),
@@ -452,7 +498,7 @@ fn launch_script(
         "--no-default-browser-check".into(),
         "--disable-dev-shm-usage".into(),
         "--disable-quic".into(),
-        format!("--proxy-server=http://127.0.0.1:{proxy_port}"),
+        format!("--proxy-server=http://127.0.0.1:{}", launch.proxy_port),
         "--proxy-bypass-list=<-loopback>".into(),
         "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".into(),
         "--disable-background-networking".into(),
@@ -466,10 +512,11 @@ fn launch_script(
         "--hide-scrollbars".into(),
         "--password-store=basic".into(),
         "--lang=en-US".into(),
-        "--window-size=1280,800".into(),
-        "about:blank".into(),
+        format!("--window-size={},{}", launch.window.0, launch.window.1),
     ]
     .into();
+    chrome_args.extend(launch.flags.iter().map(|flag| flag.to_string()));
+    chrome_args.push("about:blank".into());
     let chrome_line: Vec<String> = chrome_args.iter().map(|a| guard::shell_quote(a)).collect();
     // DevTools on fds 3 (in) and 4 (out): both the socket systemd connected.
     let inner = format!(
@@ -490,39 +537,61 @@ fn launch_script(
 
 type Reply = oneshot::Sender<Result<Value, String>>;
 
-struct Cdp {
+pub(crate) struct Cdp {
     writer: tokio::sync::Mutex<OwnedWriteHalf>,
     pending: Mutex<HashMap<u64, Reply>>,
     next: AtomicU64,
     closed: AtomicBool,
+    /// Where Chrome's events go besides the browser's own handling.
+    events: Mutex<Option<mpsc::UnboundedSender<Value>>>,
 }
 
 impl Cdp {
-    fn start(stream: UnixStream) -> Arc<Self> {
+    fn start(stream: UnixStream, max_message: usize) -> Arc<Self> {
         let (read, write) = stream.into_split();
         let cdp = Arc::new(Self {
             writer: tokio::sync::Mutex::new(write),
             pending: Mutex::new(HashMap::new()),
             next: AtomicU64::new(0),
             closed: AtomicBool::new(false),
+            events: Mutex::new(None),
         });
-        tokio::spawn(read_messages(read, Arc::downgrade(&cdp)));
+        tokio::spawn(read_messages(read, Arc::downgrade(&cdp), max_message));
         cdp
     }
 
-    fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Relaxed)
+    }
+
+    /// Chrome's events from now on (one listener: a new one replaces it);
+    /// the stream ends when Chrome does.
+    pub(crate) fn events(&self) -> mpsc::UnboundedReceiver<Value> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        *self.events.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+        rx
     }
 
     fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Reply>> {
         self.pending.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    async fn call(
+    pub(crate) async fn call(
         &self,
         session: Option<&str>,
         method: &str,
         params: Value,
+    ) -> Result<Value, String> {
+        self.call_for(session, method, params, CALL_TIMEOUT).await
+    }
+
+    /// One command, waiting for its answer at most `limit`.
+    pub(crate) async fn call_for(
+        &self,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+        limit: Duration,
     ) -> Result<Value, String> {
         if self.is_closed() {
             return Err(GONE.into());
@@ -541,7 +610,7 @@ impl Cdp {
             self.pending().remove(&id);
             return Err(GONE.into());
         }
-        match tokio::time::timeout(CALL_TIMEOUT, rx).await {
+        match tokio::time::timeout(limit, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(GONE.into()),
             Err(_) => {
@@ -564,6 +633,14 @@ impl Cdp {
                 let _ = reply.send(result);
             }
             return;
+        }
+        if let Some(events) = self
+            .events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            let _ = events.send(message.clone());
         }
         let params = &message["params"];
         match message["method"].as_str().unwrap_or("") {
@@ -600,6 +677,7 @@ impl Cdp {
 
     fn fail_all(&self) {
         self.closed.store(true, Ordering::Relaxed);
+        self.events.lock().unwrap_or_else(|e| e.into_inner()).take();
         for (_, reply) in self.pending().drain() {
             let _ = reply.send(Err(GONE.into()));
         }
@@ -607,7 +685,7 @@ impl Cdp {
 }
 
 /// Read NUL-separated messages until Chrome closes its end.
-async fn read_messages(mut read: OwnedReadHalf, cdp: Weak<Cdp>) {
+async fn read_messages(mut read: OwnedReadHalf, cdp: Weak<Cdp>, max_message: usize) {
     let mut buffer: Vec<u8> = Vec::new();
     let mut chunk = vec![0u8; 64 * 1024];
     let mut scanned = 0;
@@ -629,7 +707,7 @@ async fn read_messages(mut read: OwnedReadHalf, cdp: Weak<Cdp>) {
             scanned = 0;
         }
         scanned = buffer.len();
-        if buffer.len() > MAX_MESSAGE {
+        if buffer.len() > max_message {
             break;
         }
     }
@@ -1108,23 +1186,37 @@ fn render(view: &Value) -> String {
 // ------------------------------------------------------------------- proxy
 
 static PROXY: OnceCell<u16> = OnceCell::const_new();
+static APP_PROXY: OnceCell<(SocketAddr, u16)> = OnceCell::const_new();
 
 /// The port of RAST's public-only proxy on 127.0.0.1 (started on first use).
 async fn proxy_port() -> Result<u16, String> {
-    PROXY
-        .get_or_try_init(|| async {
-            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-                .await
-                .map_err(|e| format!("the browser's proxy did not start: {e}"))?;
-            let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-            tokio::spawn(serve_proxy(listener));
-            Ok::<u16, String>(port)
-        })
-        .await
-        .copied()
+    PROXY.get_or_try_init(|| start_proxy(None)).await.copied()
 }
 
-async fn serve_proxy(listener: TcpListener) {
+/// The proxy of the apps' windows on the server ([`super::app_window`]): the
+/// public web, and RAST's web page apps' files at `rast` (only
+/// `/api/appweb/…`: nothing else of RAST or this server).
+pub(crate) async fn app_proxy_port(rast: SocketAddr) -> Result<u16, String> {
+    let (at, port) = APP_PROXY
+        .get_or_try_init(|| async { Ok::<_, String>((rast, start_proxy(Some(rast)).await?)) })
+        .await
+        .copied()?;
+    if at != rast {
+        return Err("RAST moved to another address: AI Agent starts again to follow it".into());
+    }
+    Ok(port)
+}
+
+async fn start_proxy(rast: Option<SocketAddr>) -> Result<u16, String> {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .map_err(|e| format!("the browser's proxy did not start: {e}"))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    tokio::spawn(serve_proxy(listener, rast));
+    Ok(port)
+}
+
+async fn serve_proxy(listener: TcpListener, rast: Option<SocketAddr>) {
     let room = Arc::new(Semaphore::new(512));
     loop {
         let Ok((client, _)) = listener.accept().await else {
@@ -1136,7 +1228,7 @@ async fn serve_proxy(listener: TcpListener) {
         };
         tokio::spawn(async move {
             let _permit = permit;
-            let _ = tokio::time::timeout(Duration::from_secs(3600), proxy_one(client)).await;
+            let _ = tokio::time::timeout(Duration::from_secs(3600), proxy_one(client, rast)).await;
         });
     }
 }
@@ -1226,9 +1318,35 @@ fn status_for(message: &str) -> &'static str {
     }
 }
 
+/// Whether a plain request goes to RAST's web page apps' files: a `GET` (or
+/// `HEAD`) at exactly RAST's address, of a path under `/api/appweb/` that
+/// climbs nowhere.
+fn to_app_files(
+    rast: Option<SocketAddr>,
+    method: &str,
+    host: &str,
+    port: u16,
+    path: &str,
+) -> Option<SocketAddr> {
+    let rast = rast?;
+    let ip: std::net::IpAddr = host.parse().ok()?;
+    let lower = path.to_ascii_lowercase();
+    let fine = (method == "GET" || method == "HEAD")
+        && ip == rast.ip()
+        && port == rast.port()
+        && path.starts_with("/api/appweb/")
+        && !path.contains("/../")
+        && !path.ends_with("/..")
+        && !path.contains('\\')
+        && !lower.contains("%2e")
+        && !lower.contains("%2f")
+        && !lower.contains("%5c");
+    fine.then_some(rast)
+}
+
 /// One proxy connection: `CONNECT host:port` (HTTPS, WebSockets) or one
 /// plain `http://` request (sent on with `Connection: close`).
-async fn proxy_one(mut client: TcpStream) -> std::io::Result<()> {
+async fn proxy_one(mut client: TcpStream, rast: Option<SocketAddr>) -> std::io::Result<()> {
     let mut head = Vec::with_capacity(2048);
     let mut chunk = [0u8; 4096];
     let end = loop {
@@ -1290,7 +1408,16 @@ async fn proxy_one(mut client: TcpStream) -> std::io::Result<()> {
             None => return refuse(&mut client, "400 Bad Request", "Not an address.").await,
         }
     };
-    let mut upstream = match open_public(&host, port).await {
+    let app_files = if connect {
+        None
+    } else {
+        to_app_files(rast, method, &host, port, &path)
+    };
+    let opened = match app_files {
+        Some(at) => TcpStream::connect(at).await.map_err(|_| UNREACHABLE),
+        None => open_public(&host, port).await,
+    };
+    let mut upstream = match opened {
         Ok(stream) => stream,
         Err(message) => return refuse(&mut client, status_for(message), message).await,
     };
@@ -1342,13 +1469,27 @@ mod tests {
         guard::hidden_paths(crate::apphost::host_api::private_paths(&config))
     }
 
+    fn test_launch() -> Launch {
+        Launch {
+            unit: "rast-browser",
+            description: "RAST agent browser",
+            proxy_port: 41234,
+            memory: "1G",
+            lifetime_secs: LIFETIME_SECS,
+            cpu: "CPUQuota=200%",
+            window: (1280, 800),
+            flags: &["--use-angle=swiftshader"],
+            max_message: MAX_MESSAGE,
+        }
+    }
+
     #[test]
     fn chrome_starts_boxed_in() {
         let script = launch_script(
             "/opt/google/chrome/chrome",
             "rast-browser-abc",
             Path::new("/var/lib/rast/browser/abc.sock"),
-            41234,
+            &test_launch(),
             &hidden(),
         )
         .unwrap();
@@ -1360,6 +1501,12 @@ mod tests {
             "'--property=ProtectHome=yes'",
             "'--property=IPAddressDeny=any'",
             "'--property=IPAddressAllow=127.0.0.1/32'",
+            "'--property=MemoryMax=1G'",
+            "'--property=CPUQuota=200%'",
+            "'--property=RuntimeMaxSec=7200'",
+            "'--description=RAST agent browser'",
+            "--window-size=1280,800",
+            "--use-angle=swiftshader",
             "'--property=StandardInput=file:/var/lib/rast/browser/abc.sock'",
             "'--property=StandardOutput=file:/var/lib/rast/browser/abc.sock'",
             "InaccessiblePaths=\"-/var/lib/rast\"",
@@ -1377,7 +1524,7 @@ mod tests {
             "/opt/google/chrome/chrome",
             "u",
             Path::new("/var/lib/my rast/a.sock"),
-            1,
+            &test_launch(),
             &hidden()
         )
         .is_err());
@@ -1487,5 +1634,83 @@ mod tests {
         let answer = ask(port, "GET https://example.com/ HTTP/1.1\r\n\r\n").await;
         assert!(answer.starts_with("HTTP/1.1 400"), "{answer}");
         drop(inside);
+    }
+
+    #[test]
+    fn app_windows_reach_only_rasts_app_files() {
+        let rast: SocketAddr = "127.0.0.1:8720".parse().unwrap();
+        let ok = |method: &str, host: &str, port: u16, path: &str| {
+            to_app_files(Some(rast), method, host, port, path).is_some()
+        };
+        assert!(ok("GET", "127.0.0.1", 8720, "/api/appweb/abc/index.html"));
+        assert!(ok("HEAD", "127.0.0.1", 8720, "/api/appweb/abc/x_bg.wasm"));
+        assert!(!ok("POST", "127.0.0.1", 8720, "/api/appweb/abc/index.html"));
+        assert!(!ok("GET", "127.0.0.1", 8721, "/api/appweb/abc/index.html"));
+        assert!(!ok("GET", "localhost", 8720, "/api/appweb/abc/index.html"));
+        assert!(!ok("GET", "127.0.0.1", 8720, "/api/files/download?path=/a"));
+        assert!(!ok("GET", "127.0.0.1", 8720, "/api/appweb/../auth/me"));
+        assert!(!ok("GET", "127.0.0.1", 8720, "/api/appweb/%2e%2e/auth/me"));
+        assert!(!ok(
+            "GET",
+            "127.0.0.1",
+            8720,
+            "/api/appweb/a%2F..%2F..%2Fauth"
+        ));
+        assert!(!ok("GET", "127.0.0.1", 8720, "/api/appweb/a/..\\x"));
+        assert!(
+            to_app_files(None, "GET", "127.0.0.1", 8720, "/api/appweb/abc/index.html").is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_app_proxy_serves_rasts_app_files_and_nothing_else_of_this_server() {
+        // RAST, answering every request it gets with the path it was asked.
+        let rast = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let at = rast.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = rast.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut head = vec![0u8; 4096];
+                    let n = stream.read(&mut head).await.unwrap_or(0);
+                    let text = String::from_utf8_lossy(&head[..n]).to_string();
+                    let path = text.split(' ').nth(1).unwrap_or("").to_string();
+                    let body = format!("asked {path}");
+                    let _ = stream
+                        .write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
+                        .await;
+                });
+            }
+        });
+        let port = start_proxy(Some(at)).await.unwrap();
+        let answer = ask(
+            port,
+            &format!(
+                "GET http://127.0.0.1:{}/api/appweb/k/index.html HTTP/1.1\r\nHost: x\r\n\r\n",
+                at.port()
+            ),
+        )
+        .await;
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(
+            answer.ends_with("asked /api/appweb/k/index.html"),
+            "{answer}"
+        );
+        for request in [
+            format!(
+                "GET http://127.0.0.1:{}/api/auth/me HTTP/1.1\r\n\r\n",
+                at.port()
+            ),
+            format!(
+                "POST http://127.0.0.1:{}/api/appweb/k/index.html HTTP/1.1\r\n\r\n",
+                at.port()
+            ),
+            format!("CONNECT 127.0.0.1:{} HTTP/1.1\r\n\r\n", at.port()),
+        ] {
+            let answer = ask(port, &request).await;
+            assert!(answer.starts_with("HTTP/1.1 403"), "{request}: {answer}");
+        }
     }
 }

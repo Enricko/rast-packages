@@ -896,6 +896,7 @@ async fn delete_conversation(
     let conversation = owned(&state, &user, &id, true).await?;
     state.ai.stop(&conversation.id);
     ai::browser::close(&conversation.id);
+    ai::app_window::close(&conversation.id);
     ai::files::remove_for_conversation(&state.db, state.data_dir(), &conversation.id).await?;
     sqlx::query("DELETE FROM ai_conversations WHERE id = ?")
         .bind(&conversation.id)

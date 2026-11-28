@@ -284,6 +284,110 @@ impl Host {
         }
     }
 
+    /// RAST's own address on this server, when its host API serves what
+    /// the apps' windows on the server need (host API 2).
+    pub fn local_address(&self) -> Option<std::net::SocketAddr> {
+        match self {
+            Host::Remote(remote) if remote.info.host_api >= 2 => {
+                remote.info.local_url.as_deref().and_then(local_address)
+            }
+            _ => None,
+        }
+    }
+
+    /// A web page app's page on [`Self::local_address`], for an account that
+    /// may open it (`/api/appweb/{key}/{page}`).
+    pub async fn app_page(&self, user: &AuthUser, app_id: &str) -> Option<String> {
+        match self {
+            Host::Remote(remote) => remote
+                .get(&format!("/v1/users/{}/apps/{app_id}", user.id))
+                .await
+                .ok()
+                .filter(|answer| answer["allowed"] == true)
+                .and_then(|answer| answer["web"].as_str().map(str::to_string))
+                .filter(|page| page.starts_with("/api/appweb/")),
+            Host::BuiltIn(_) => None,
+        }
+    }
+
+    /// A file of the account, as it is (at most 64 MiB).
+    pub async fn file_bytes(&self, user: &AuthUser, path: &str) -> Result<Vec<u8>, String> {
+        let Host::Remote(remote) = self else {
+            return Err("this RAST reads no files for apps".into());
+        };
+        let body = json!({"userId": user.id, "path": path}).to_string();
+        let (status, _, bytes) = remote
+            .call_raw(
+                Method::POST,
+                "/v1/files/bytes",
+                body.into_bytes(),
+                "application/json",
+            )
+            .await?;
+        if status.is_success() {
+            Ok(bytes)
+        } else {
+            Err(error_text(
+                &serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            ))
+        }
+    }
+
+    /// Write a file of the account (replacing one there): its entry and
+    /// whether a file was there before.
+    pub async fn put_file_bytes(
+        &self,
+        user: &AuthUser,
+        path: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(EntryDto, bool), String> {
+        let Host::Remote(remote) = self else {
+            return Err("this RAST writes no files for apps".into());
+        };
+        let path = percent_encoding::utf8_percent_encode(path, percent_encoding::NON_ALPHANUMERIC);
+        let query = format!("userId={}&path={path}", user.id);
+        let (status, _, answer) = remote
+            .call_raw(
+                Method::PUT,
+                &format!("/v1/files/bytes?{query}"),
+                bytes,
+                "application/octet-stream",
+            )
+            .await?;
+        let answer: Value = serde_json::from_slice(&answer).unwrap_or(Value::Null);
+        if !status.is_success() {
+            return Err(error_text(&answer));
+        }
+        let entry = serde_json::from_value(answer["entry"].clone())
+            .map_err(|e| format!("RAST answered oddly: {e}"))?;
+        Ok((entry, answer["existed"] == true))
+    }
+
+    /// One request to the account's storage of a web page app (`rest`:
+    /// after `/api/webstorage/{app}`, with its query): RAST's answer as it
+    /// is (status, media type, body).
+    pub async fn web_storage(
+        &self,
+        user: &AuthUser,
+        app_id: &str,
+        method: Method,
+        rest: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(StatusCode, String, Vec<u8>), String> {
+        let Host::Remote(remote) = self else {
+            return Err("this RAST keeps no storage for apps".into());
+        };
+        remote
+            .call_raw(
+                method,
+                &format!("/v1/users/{}/webstorage/{app_id}{rest}", user.id),
+                body,
+                content_type,
+            )
+            .await
+    }
+
     /// The apps the account may open now, AI Agent itself left out.
     pub async fn apps(&self, user: &AuthUser) -> Vec<HostApp> {
         let listed = match self {
@@ -591,6 +695,20 @@ pub struct HostInfo {
     pub docker_enabled: bool,
     #[serde(default)]
     pub public_url: Option<String>,
+    /// The host API's version (2: app pages, file bytes, web storage).
+    #[serde(default)]
+    pub host_api: u32,
+    /// RAST's own address on this server (host API 2).
+    #[serde(default)]
+    pub local_url: Option<String>,
+}
+
+/// `http://host:port` as an address (RAST's own, from `/v1/info`).
+pub fn local_address(url: &str) -> Option<std::net::SocketAddr> {
+    url.strip_prefix("http://")?
+        .trim_end_matches('/')
+        .parse()
+        .ok()
 }
 
 /// RAST's host API, over `host.sock`.
@@ -657,6 +775,16 @@ impl Remote {
         body: Option<&Value>,
     ) -> Result<(StatusCode, Value), String> {
         call(&self.socket, &self.token, method, path, body).await
+    }
+
+    async fn call_raw(
+        &self,
+        method: Method,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(StatusCode, String, Vec<u8>), String> {
+        call_raw(&self.socket, &self.token, method, path, body, content_type).await
     }
 
     /// RAST's AI Agent data (`GET /v1/migrate/ai`).
@@ -815,6 +943,30 @@ async fn call(
     path: &str,
     body: Option<&Value>,
 ) -> Result<(StatusCode, Value), String> {
+    let payload = body.map(|b| b.to_string()).unwrap_or_default();
+    let (status, _, bytes) = call_raw(
+        socket,
+        token,
+        method,
+        path,
+        payload.into_bytes(),
+        "application/json",
+    )
+    .await?;
+    let answer = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    Ok((status, answer))
+}
+
+/// One request with a body as it is: the status, media type and body of
+/// RAST's answer.
+async fn call_raw(
+    socket: &Path,
+    token: &str,
+    method: Method,
+    path: &str,
+    body: Vec<u8>,
+    content_type: &str,
+) -> Result<(StatusCode, String, Vec<u8>), String> {
     let stream = UnixStream::connect(socket)
         .await
         .map_err(|e| format!("cannot reach RAST: {e}"))?;
@@ -824,23 +976,27 @@ async fn call(
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    let payload = body.map(|b| b.to_string()).unwrap_or_default();
     let request = hyper::Request::builder()
         .method(method)
         .uri(path)
         .header(header::HOST, "rast")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(payload))
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
         .map_err(|e| e.to_string())?;
     let response = sender
         .send_request(request)
         .await
         .map_err(|e| format!("RAST did not answer: {e}"))?;
     let status = response.status();
-    let bytes = axum::body::to_bytes(Body::new(response.into_body()), ANSWER_LIMIT)
+    let media = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let bytes = axum::body::to_bytes(Body::new(response.into_body()), ANSWER_LIMIT + 1024 * 1024)
         .await
         .map_err(|e| format!("RAST's answer could not be read: {e}"))?;
-    let answer = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    Ok((status, answer))
+    Ok((status, media, bytes.to_vec()))
 }

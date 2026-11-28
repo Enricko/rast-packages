@@ -33,6 +33,7 @@ pub use rast::{
 pub mod accounts;
 pub mod api;
 pub mod app;
+pub mod app_window;
 pub mod browser;
 pub mod context;
 pub mod convert;

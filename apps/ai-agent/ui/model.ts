@@ -21,6 +21,10 @@ export interface ToolBlock {
   error?: string;
   /** The browser's screenshot of the page after the step (a file of the chat). */
   image?: Omit<FileBlock, "type">;
+  /** `use_app`/`open_app` ran in the app's window on the server (not this page). */
+  server?: boolean;
+  /** The file that window has open (the person opens it from the card). */
+  document?: string;
 }
 
 /** A file sent with a message (see src/ai/files.rs). */

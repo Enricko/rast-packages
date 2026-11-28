@@ -487,6 +487,17 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
     }
 }
 
+/// Whether a call works in an app's window on the server: `use_app`, and
+/// `open_app` of an app that takes commands.
+fn server_call(available: &tools::Available, block: &Value) -> bool {
+    let app = block["input"]["app"].as_str().unwrap_or("").trim();
+    match block["name"].as_str().unwrap_or("") {
+        tools::USE_APP => true,
+        tools::OPEN_APP => available.apps.iter().any(|a| a.id == app && a.commands),
+        _ => false,
+    }
+}
+
 /// Run the calls the owner allowed, in order. False when stopped.
 async fn run_allowed_tools(
     state: &Agent,
@@ -498,12 +509,18 @@ async fn run_allowed_tools(
         if run.cancelled() {
             return false;
         }
+        // The apps' windows on the server do the app's part: the person's
+        // page leaves those calls alone.
+        let on_server = job.tools.server_apps && job.tools.has(tools::USE_APP);
         let next = run.with(|s| {
             let at = s
                 .blocks
                 .iter()
                 .position(|b| super::is_tool_block(b) && b["status"] == "allowed")?;
             s.blocks[at]["status"] = json!("running");
+            if on_server && server_call(&job.tools, &s.blocks[at]) {
+                s.blocks[at]["server"] = json!(true);
+            }
             Some((
                 at,
                 s.blocks[at]["name"].as_str().unwrap_or("").to_string(),
@@ -516,12 +533,13 @@ async fn run_allowed_tools(
         };
         // A call the person's page runs waits for its answer from now on: the
         // page may answer as soon as it sees the call running.
-        let page = (name == tools::USE_APP && job.tools.has(tools::USE_APP)).then(|| {
-            state
-                .ai
-                .pages
-                .wait(&job.conversation_id, &call_id, job.owner.id)
-        });
+        let page =
+            (name == tools::USE_APP && job.tools.has(tools::USE_APP) && !on_server).then(|| {
+                state
+                    .ai
+                    .pages
+                    .wait(&job.conversation_id, &call_id, job.owner.id)
+            });
         progress(state, run, job, tokens).await;
         let outcome = tokio::select! {
             biased;
@@ -529,6 +547,7 @@ async fn run_allowed_tools(
             result = async {
                 match page {
                     Some(answer) => super::use_app::run(state, &job.owner, &job.tools, &job.conversation_id, &input, answer).await,
+                    None if on_server && name == tools::USE_APP => super::app_window::use_app(state, &job.owner, &job.tools, &job.conversation_id, &input).await,
                     None => tools::execute(state, &job.owner, &job.tools, &job.conversation_id, &name, &input).await,
                 }
             } => Some(result),
@@ -538,8 +557,17 @@ async fn run_allowed_tools(
         }
         let stopped = outcome.is_none();
         let failed = !matches!(outcome, Some(Ok(_)));
+        // The file the app's window on the server has open, for the card.
+        let document = (on_server
+            && server_call(&job.tools, &json!({"name": name, "input": input})))
+        .then(|| input.get("app").and_then(Value::as_str))
+        .flatten()
+        .and_then(|app| super::app_window::document(&job.conversation_id, app));
         run.with(|s| {
             let block = &mut s.blocks[at];
+            if let Some(path) = &document {
+                block["document"] = json!(path);
+            }
             match outcome {
                 Some(Ok(output)) => {
                     block["status"] = json!("done");

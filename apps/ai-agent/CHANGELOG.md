@@ -7,6 +7,30 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent's work in apps goes on when the person closes RAST.**
+  `use_app` (and `open_app` of an app that takes commands) works in a
+  window of the app that AI Agent keeps on the server, one per chat and app
+  (`src/app_window.rs`), instead of in the browser tab that started the
+  reply: a job of hours in WordCraft keeps going with the tab closed. The
+  window is a headless Chrome boxed in as the browser tool's (a software
+  GPU for the app's canvas, a CPU share instead of a cap so the app's
+  WebAssembly compiles without stalling its drawing) whose page plays the
+  RAST window's part: it frames the app's page as RAST does, opens the
+  person's file, keeps the app's settings and fonts in the account's
+  storage, and stores what the app saves in the person's files with their
+  rights (Save writes the open file; Save As and exports go into its
+  folder, beside files already there under a name of their own). Its only
+  network is a proxy to the public web and RAST's web page apps' files.
+  Saves and the app's messages show in the next call's result; the chat's
+  cards open the file as last saved. A window rests (its page frozen) after
+  a minute without work, closes 30 minutes after its chat's reply ends,
+  starts again with the file as last saved when it stopped, and at most 3
+  run on the server. Needs RAST with host API 2 (`localUrl` in
+  `/v1/info`), Chrome and the Terminal helper, as the browser tool does;
+  otherwise the person's page does the work as before.
+
 ## [1.9.0] - 2026-11-28
 
 ### Changed
