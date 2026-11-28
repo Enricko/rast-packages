@@ -11,6 +11,15 @@ export interface Release {
 
 export const WHATS_NEW: Release[] = [
   {
+    version: "1.6.0",
+    date: "2026-11-28",
+    items: [
+      "A bar under the message box: messages, steps and writing speed, tokens and the cache's share, the provider's limits (time left and share used; click for every provider's) and how full the model's context is.",
+      "The model and the effort are one chip: Model opens a list to search, grouped by provider; Effort the levels.",
+      "Chats name themselves from the first answer, so the list says what each one is doing. A name you give stays.",
+    ],
+  },
+  {
     version: "1.5.0",
     date: "2026-11-28",
     items: [

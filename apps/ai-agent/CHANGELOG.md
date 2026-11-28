@@ -7,6 +7,8 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-28
+
 ### Added
 
 - **A bar under the message box.** What the chat used (messages, tool
