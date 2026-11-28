@@ -10,6 +10,9 @@
 //   answered by `saved`) and asks it to work (`request`, answered by
 //   `reply`);
 // - what the page stores goes to the account's storage in RAST.
+// - an app that takes no documents from RAST gets the file the window has
+//   ready at its file picker, and what it saves as a download is stored
+//   (`app_frame.js` in the app's frame, messages marked `rastAgentFrame`).
 // AI Agent is reached through the `rastAgent` binding (a JSON message; an
 // asking one carries `call` and is answered by `window.__rast.answer`).
 (() => {
@@ -563,6 +566,49 @@
   let opening = Promise.resolve();
   let saves = 0;
   let lastSave = 0;
+  /** The file for the app's next file picker: `{name, bytes}`. */
+  let staged = null;
+
+  /** Store what the app saved; `saveAs` when it names the file itself. */
+  function store(save, done) {
+    saves += 1;
+    lastSave = Date.now();
+    ask({ kind: "save", name: save.name, saveAs: save.saveAs, bytes: base64(new Uint8Array(save.bytes)) })
+      .then(() => done && done())
+      .catch(() => undefined)
+      .finally(() => {
+        saves -= 1;
+        lastSave = Date.now();
+      });
+  }
+
+  /** A message of `app_frame.js` in the app's frame. */
+  function fromFrame(data) {
+    switch (data.kind) {
+      case "pick": {
+        const files = [];
+        const transfer = [];
+        if (staged) {
+          const bytes = staged.bytes.slice().buffer;
+          files.push({ name: staged.name, type: "", bytes });
+          transfer.push(bytes);
+          tell({ kind: "note", text: `${name}'s file picker got ${staged.path}.` });
+        } else {
+          tell({ kind: "note", text: `${name} asked for a file (its file picker): open_app with the file's path gives it one, then open it in the app again.` });
+        }
+        frame.contentWindow.postMessage({ rastAgentFrame: 1, kind: "picked", id: data.id, files }, "*", transfer);
+        break;
+      }
+      case "download":
+        if (typeof data.name === "string" && data.bytes instanceof ArrayBuffer) {
+          store({ name: data.name, bytes: data.bytes, saveAs: true });
+        }
+        break;
+      case "download-failed":
+        tell({ kind: "note", text: `${name} saved a download that could not be read: ${String(data.error || "")}` });
+        break;
+    }
+  }
 
   /** Saves the app handed over meanwhile are stored (or gave up). */
   async function settle() {
@@ -582,19 +628,10 @@
       frame.setAttribute("allow", "fullscreen; clipboard-read; clipboard-write");
       frame.setAttribute("referrerpolicy", "no-referrer");
       bridge = new Bridge(() => frame && frame.contentWindow, {
-        save: (save) => {
-          saves += 1;
-          lastSave = Date.now();
-          ask({ kind: "save", name: save.name, saveAs: save.saveAs, bytes: base64(new Uint8Array(save.bytes)) })
-            .then(() => {
-              if (save.id !== undefined) bridge.saved(save.id);
-            })
-            .catch(() => undefined)
-            .finally(() => {
-              saves -= 1;
-              lastSave = Date.now();
-            });
-        },
+        save: (save) =>
+          store(save, () => {
+            if (save.id !== undefined) bridge.saved(save.id);
+          }),
         dirty: (dirty) => tell({ kind: "dirty", dirty }),
         failed: (error) => {
           if (error) tell({ kind: "note", text: `${name}: ${error}` });
@@ -602,7 +639,9 @@
         storage: (request) => storage.handle(request),
       });
       addEventListener("message", (event) => {
-        if (frame && frame.contentWindow && event.source === frame.contentWindow) bridge.receive(event.data);
+        if (!frame || !frame.contentWindow || event.source !== frame.contentWindow) return;
+        if (isRecord(event.data) && event.data.rastAgentFrame === 1) fromFrame(event.data);
+        else bridge.receive(event.data);
       });
       // The browser gives the page the frame's name when it joins the page.
       frame.name = `rast-storage:${JSON.stringify({ v: 1, local: isRecord(config.local) ? config.local : {} })}`;
@@ -620,6 +659,23 @@
         await sleep(600);
       })();
       return opening;
+    },
+
+    /** What the app offers once it started: `{documents, commands}`. */
+    async offers(limitMs) {
+      await bridge.until(() => ((bridge.documents && bridge.commands) || bridge.settled() ? true : null), limitMs);
+      return { documents: bridge.documents, commands: bridge.commands };
+    },
+
+    /** The file for the app's next file picker (its bytes in base64). */
+    stage(file, bytes, path) {
+      staged = { name: String(file), bytes: unbase64(bytes), path: String(path) };
+      return true;
+    },
+
+    /** Wait for what the app saved meanwhile (after a click or a key). */
+    settle() {
+      return settle();
     },
 
     /** One method of the app's page command API. */

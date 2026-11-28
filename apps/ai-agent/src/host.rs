@@ -116,6 +116,19 @@ pub struct HostApp {
     /// Its window may answer other apps' requests (`use_app`; RAST 0.9.20).
     #[serde(default)]
     pub commands: bool,
+    /// Its window: `web` (a web page) or `desktop` (RAST's own window code;
+    /// host API 3), empty from an older RAST.
+    #[serde(default)]
+    pub window: String,
+}
+
+/// A session of an account for its window of an app on the server (host
+/// API 3): the window's page signs in with the cookie `cookie=token`.
+#[derive(Debug, Clone)]
+pub struct WindowSession {
+    pub cookie: String,
+    pub token: String,
+    pub id: String,
 }
 
 /// RAST's built-in apps, for a RAST without `/v1/users/{id}/apps`.
@@ -295,6 +308,53 @@ impl Host {
         }
     }
 
+    /// Whether RAST opens sessions for the apps' windows on the server
+    /// (host API 3): windows of RAST's own window code there.
+    pub fn window_sessions(&self) -> bool {
+        matches!(self, Host::Remote(remote) if remote.info.host_api >= 3)
+            && self.local_address().is_some()
+    }
+
+    /// A session of `user` for its window of an app on the server.
+    pub async fn open_window_session(&self, user: &AuthUser) -> Result<WindowSession, String> {
+        let Host::Remote(remote) = self else {
+            return Err("this RAST opens no sessions for apps' windows".into());
+        };
+        let (status, answer) = remote
+            .call(
+                Method::POST,
+                &format!("/v1/users/{}/window-sessions", user.id),
+                None,
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(error_text(&answer));
+        }
+        let text = |key: &str| answer[key].as_str().unwrap_or("").to_string();
+        let session = WindowSession {
+            cookie: text("cookie"),
+            token: text("token"),
+            id: text("sessionId"),
+        };
+        if session.cookie.is_empty() || session.token.is_empty() || session.id.is_empty() {
+            return Err("RAST answered oddly about the window's session".into());
+        }
+        Ok(session)
+    }
+
+    /// End a session [`Self::open_window_session`] opened.
+    pub async fn close_window_session(&self, user_id: i64, session_id: &str) {
+        if let Host::Remote(remote) = self {
+            let _ = remote
+                .call(
+                    Method::DELETE,
+                    &format!("/v1/users/{user_id}/window-sessions/{session_id}"),
+                    None,
+                )
+                .await;
+        }
+    }
+
     /// A web page app's page on [`Self::local_address`], for an account that
     /// may open it (`/api/appweb/{key}/{page}`).
     pub async fn app_page(&self, user: &AuthUser, app_id: &str) -> Option<String> {
@@ -413,6 +473,7 @@ impl Host {
                             description: String::new(),
                             opens: Vec::new(),
                             commands: false,
+                            window: String::new(),
                         });
                     }
                 }

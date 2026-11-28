@@ -1187,6 +1187,16 @@ fn render(view: &Value) -> String {
 
 static PROXY: OnceCell<u16> = OnceCell::const_new();
 static APP_PROXY: OnceCell<(SocketAddr, u16)> = OnceCell::const_new();
+static DESKTOP_PROXY: OnceCell<(SocketAddr, u16)> = OnceCell::const_new();
+
+/// What of RAST a proxy reaches besides the public web: its web page apps'
+/// files at `at`, or (`whole`) all of RAST at `at` (a window signed in as
+/// an account, which reaches what that account's browser reaches).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Reach {
+    pub at: SocketAddr,
+    pub whole: bool,
+}
 
 /// The port of RAST's public-only proxy on 127.0.0.1 (started on first use).
 async fn proxy_port() -> Result<u16, String> {
@@ -1197,17 +1207,42 @@ async fn proxy_port() -> Result<u16, String> {
 /// public web, and RAST's web page apps' files at `rast` (only
 /// `/api/appweb/…`: nothing else of RAST or this server).
 pub(crate) async fn app_proxy_port(rast: SocketAddr) -> Result<u16, String> {
-    let (at, port) = APP_PROXY
-        .get_or_try_init(|| async { Ok::<_, String>((rast, start_proxy(Some(rast)).await?)) })
+    proxy_for(
+        &APP_PROXY,
+        Reach {
+            at: rast,
+            whole: false,
+        },
+    )
+    .await
+}
+
+/// The proxy of the apps' windows of RAST's own window code on the server:
+/// the public web and all of RAST at `rast` (the window is signed in as the
+/// account), nothing else of this server.
+pub(crate) async fn desktop_proxy_port(rast: SocketAddr) -> Result<u16, String> {
+    proxy_for(
+        &DESKTOP_PROXY,
+        Reach {
+            at: rast,
+            whole: true,
+        },
+    )
+    .await
+}
+
+async fn proxy_for(cell: &OnceCell<(SocketAddr, u16)>, reach: Reach) -> Result<u16, String> {
+    let (at, port) = cell
+        .get_or_try_init(|| async { Ok::<_, String>((reach.at, start_proxy(Some(reach)).await?)) })
         .await
         .copied()?;
-    if at != rast {
+    if at != reach.at {
         return Err("RAST moved to another address: AI Agent starts again to follow it".into());
     }
     Ok(port)
 }
 
-async fn start_proxy(rast: Option<SocketAddr>) -> Result<u16, String> {
+async fn start_proxy(rast: Option<Reach>) -> Result<u16, String> {
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
         .map_err(|e| format!("the browser's proxy did not start: {e}"))?;
@@ -1216,7 +1251,7 @@ async fn start_proxy(rast: Option<SocketAddr>) -> Result<u16, String> {
     Ok(port)
 }
 
-async fn serve_proxy(listener: TcpListener, rast: Option<SocketAddr>) {
+async fn serve_proxy(listener: TcpListener, rast: Option<Reach>) {
     let room = Arc::new(Semaphore::new(512));
     loop {
         let Ok((client, _)) = listener.accept().await else {
@@ -1318,22 +1353,27 @@ fn status_for(message: &str) -> &'static str {
     }
 }
 
-/// Whether a plain request goes to RAST's web page apps' files: a `GET` (or
-/// `HEAD`) at exactly RAST's address, of a path under `/api/appweb/` that
-/// climbs nowhere.
+/// Whether a plain request goes to RAST: any at exactly RAST's address for
+/// a proxy that reaches all of it; otherwise to its web page apps' files, a
+/// `GET` (or `HEAD`) of a path under `/api/appweb/` that climbs nowhere.
 fn to_app_files(
-    rast: Option<SocketAddr>,
+    rast: Option<Reach>,
     method: &str,
     host: &str,
     port: u16,
     path: &str,
 ) -> Option<SocketAddr> {
-    let rast = rast?;
+    let reach = rast?;
+    let rast = reach.at;
     let ip: std::net::IpAddr = host.parse().ok()?;
+    if ip != rast.ip() || port != rast.port() {
+        return None;
+    }
+    if reach.whole {
+        return Some(rast);
+    }
     let lower = path.to_ascii_lowercase();
     let fine = (method == "GET" || method == "HEAD")
-        && ip == rast.ip()
-        && port == rast.port()
         && path.starts_with("/api/appweb/")
         && !path.contains("/../")
         && !path.ends_with("/..")
@@ -1346,7 +1386,7 @@ fn to_app_files(
 
 /// One proxy connection: `CONNECT host:port` (HTTPS, WebSockets) or one
 /// plain `http://` request (sent on with `Connection: close`).
-async fn proxy_one(mut client: TcpStream, rast: Option<SocketAddr>) -> std::io::Result<()> {
+async fn proxy_one(mut client: TcpStream, rast: Option<Reach>) -> std::io::Result<()> {
     let mut head = Vec::with_capacity(2048);
     let mut chunk = [0u8; 4096];
     let end = loop {
@@ -1638,7 +1678,8 @@ mod tests {
 
     #[test]
     fn app_windows_reach_only_rasts_app_files() {
-        let rast: SocketAddr = "127.0.0.1:8720".parse().unwrap();
+        let at: SocketAddr = "127.0.0.1:8720".parse().unwrap();
+        let rast = Reach { at, whole: false };
         let ok = |method: &str, host: &str, port: u16, path: &str| {
             to_app_files(Some(rast), method, host, port, path).is_some()
         };
@@ -1660,6 +1701,12 @@ mod tests {
         assert!(
             to_app_files(None, "GET", "127.0.0.1", 8720, "/api/appweb/abc/index.html").is_none()
         );
+        // A window signed in as an account reaches all of RAST, only RAST.
+        let whole = Some(Reach { at, whole: true });
+        assert!(to_app_files(whole, "POST", "127.0.0.1", 8720, "/api/files/mkdir").is_some());
+        assert!(to_app_files(whole, "GET", "127.0.0.1", 8720, "/api/events").is_some());
+        assert!(to_app_files(whole, "GET", "127.0.0.1", 8721, "/").is_none());
+        assert!(to_app_files(whole, "GET", "127.0.0.2", 8720, "/").is_none());
     }
 
     #[tokio::test]
@@ -1684,7 +1731,7 @@ mod tests {
                 });
             }
         });
-        let port = start_proxy(Some(at)).await.unwrap();
+        let port = start_proxy(Some(Reach { at, whole: false })).await.unwrap();
         let answer = ask(
             port,
             &format!(

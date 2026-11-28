@@ -19,6 +19,13 @@
 //!   into the open file's folder (Home for a new document) under the name the
 //!   app gives, a name of their own (`name (2).ext`) beside a file already
 //!   there that this window did not write.
+//! * Every app answers the window's own control methods ([`by_hand`]:
+//!   pictures, clicks, typing, keys, scrolling, dragging), also one without
+//!   a command API of its own; one that has it answers the rest.
+//! * An app that takes no documents from RAST (it opens files with the
+//!   browser's file picker and saves downloads) gets the person's file at
+//!   its file picker, and its downloads are stored as Save As stores them
+//!   (`app_frame.js`, added to the app's frame before its scripts).
 //! * A window stays while its chat replies and [`IDLE`] after (what it did
 //!   not save goes with it), at most [`MAX_WINDOWS`] on the server. A window
 //!   that stopped starts again with its file as last saved.
@@ -41,7 +48,7 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 
 use super::browser::{self, Cdp, Launch};
-use super::host::{Agent, HostApp};
+use super::host::{Agent, Host, HostApp, WindowSession};
 use super::run::Runs;
 use super::tools::{Available, Output};
 use super::use_app;
@@ -68,6 +75,14 @@ const MAX_DOCUMENT: usize = 64 * 1024 * 1024;
 const HOST_PATH: &str = "/api/appweb/rast-agent-window";
 /// The window's page.
 const HOST_SCRIPT: &str = include_str!("app_window.js");
+/// Added to the app's frame before its own scripts (file picker, downloads).
+const FRAME_SCRIPT: &str = include_str!("app_frame.js");
+/// The window's size, the space of the control methods' points.
+pub const WINDOW_SIZE: (u32, u32) = (1440, 900);
+const WIDTH: u32 = WINDOW_SIZE.0;
+const HEIGHT: u32 = WINDOW_SIZE.1;
+/// The most text one `ui.text` types (key by key).
+const MAX_TYPED: usize = 20_000;
 /// What the window's page may do: frame RAST's app pages, run its script.
 const HOST_CSP: &str =
     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self'";
@@ -107,6 +122,10 @@ struct Window {
     app: HostApp,
     owner: AuthUser,
     conversation: String,
+    /// The account's session of a window of RAST's own window code (its
+    /// page is RAST's, `?window=<appId>`); none for a web page app's.
+    session: Option<WindowSession>,
+    host: Host,
     /// The document the app shows now.
     path: Mutex<Option<String>>,
     /// Documents it opened or saved, by the name the app knows them by.
@@ -120,6 +139,8 @@ struct Window {
     gone: AtomicBool,
     /// The page is frozen ([`REST`]).
     frozen: AtomicBool,
+    /// What the app offers, once it said ([`Window::offers`]).
+    offers: Mutex<Option<Offers>>,
     last_used: AtomicI64,
     busy: tokio::sync::Mutex<()>,
     /// Saves are stored one after another.
@@ -127,6 +148,105 @@ struct Window {
 }
 
 type Key = (String, String);
+
+/// Control methods the window answers itself, for every app.
+const WINDOW_ONLY: [&str; 4] = ["ui.scroll", "ui.drag", "ui.move", "app.open"];
+/// Control methods the window answers for an app with no command API.
+const BY_HAND: [&str; 5] = [
+    "ui.screenshot",
+    "ui.inspect",
+    "ui.click",
+    "ui.text",
+    "ui.key",
+];
+
+/// One key, as DevTools presses it.
+#[derive(Debug, PartialEq)]
+struct KeyPress {
+    key: String,
+    code: String,
+    key_code: u32,
+    text: Option<String>,
+}
+
+/// A key by its name: Enter, Tab, Escape, Backspace, Delete, the arrows
+/// (Left or ArrowLeft), Home, End, PageUp, PageDown, Space, F1-F12, a letter
+/// or a digit.
+fn key_named(name: &str) -> Result<KeyPress, String> {
+    let named = |key: &str, code: &str, key_code: u32, text: Option<&str>| KeyPress {
+        key: key.into(),
+        code: code.into(),
+        key_code,
+        text: text.map(str::to_string),
+    };
+    let lower = name.trim().to_ascii_lowercase();
+    let key = match lower.trim_start_matches("arrow") {
+        "enter" | "return" => named("Enter", "Enter", 13, Some("\r")),
+        "tab" => named("Tab", "Tab", 9, None),
+        "escape" | "esc" => named("Escape", "Escape", 27, None),
+        "backspace" => named("Backspace", "Backspace", 8, None),
+        "delete" | "del" => named("Delete", "Delete", 46, None),
+        "left" => named("ArrowLeft", "ArrowLeft", 37, None),
+        "up" => named("ArrowUp", "ArrowUp", 38, None),
+        "right" => named("ArrowRight", "ArrowRight", 39, None),
+        "down" => named("ArrowDown", "ArrowDown", 40, None),
+        "home" => named("Home", "Home", 36, None),
+        "end" => named("End", "End", 35, None),
+        "pageup" => named("PageUp", "PageUp", 33, None),
+        "pagedown" => named("PageDown", "PageDown", 34, None),
+        "space" | " " => named(" ", "Space", 32, Some(" ")),
+        f if f.len() >= 2 && f.starts_with('f') && f[1..].parse::<u32>().is_ok_and(|n| (1..=12).contains(&n)) => {
+            let n: u32 = f[1..].parse().unwrap_or(1);
+            let upper = format!("F{n}");
+            named(&upper, &upper, 111 + n, None)
+        }
+        one if one.chars().count() == 1 && one.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            return Ok(key_typed(name.trim().chars().next().unwrap_or('a')));
+        }
+        _ => {
+            return Err(format!(
+                "ui.key: {name:?} is not a key here (Enter, Tab, Escape, Backspace, Delete, Left, Up, Right, Down, Home, End, PageUp, PageDown, Space, F1-F12, a letter or a digit)"
+            ))
+        }
+    };
+    Ok(key)
+}
+
+/// The key that types `ch`.
+fn key_typed(ch: char) -> KeyPress {
+    let upper = ch.to_ascii_uppercase();
+    let (code, key_code) = if ch.is_ascii_alphabetic() {
+        (format!("Key{upper}"), upper as u32)
+    } else if ch.is_ascii_digit() {
+        (format!("Digit{ch}"), ch as u32)
+    } else if ch == ' ' {
+        ("Space".into(), 32)
+    } else {
+        (String::new(), 0)
+    };
+    KeyPress {
+        key: ch.to_string(),
+        code,
+        key_code,
+        text: Some(ch.to_string()),
+    }
+}
+
+/// What an app offers its window: documents from RAST (otherwise it opens
+/// files with the browser's file picker) and a command API of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Offers {
+    pub documents: bool,
+    pub commands: bool,
+}
+
+/// What each app offered the last window of it (for the tool's description).
+static KNOWN: LazyLock<Mutex<HashMap<String, Offers>>> = LazyLock::new(Default::default);
+
+/// What `app_id` offered the last window of it on the server, if one ran.
+pub fn known_offers(app_id: &str) -> Option<Offers> {
+    lock(&KNOWN).get(app_id).copied()
+}
 
 static WINDOWS: LazyLock<Mutex<HashMap<Key, Arc<Window>>>> = LazyLock::new(Default::default);
 /// The document each chat's window of an app had open, for a window that
@@ -146,7 +266,26 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+impl Drop for Window {
+    fn drop(&mut self) {
+        // The window's session ends with it (RAST ends it after 12 hours
+        // anyway).
+        if let (Some(session), Ok(runtime)) =
+            (self.session.take(), tokio::runtime::Handle::try_current())
+        {
+            let host = self.host.clone();
+            let user = self.owner.id;
+            runtime.spawn(async move { host.close_window_session(user, &session.id).await });
+        }
+    }
+}
+
 impl Window {
+    /// A window of RAST's own window code (not a web page app's).
+    fn is_desktop(&self) -> bool {
+        self.session.is_some()
+    }
+
     fn touch(&self) {
         self.last_used.store(crate::db::now_ms(), Ordering::Relaxed);
     }
@@ -165,9 +304,11 @@ impl Window {
         if self.frozen.swap(true, Ordering::Relaxed) {
             return;
         }
-        let _ = self
-            .evaluate("window.__rast.flush()".into(), Duration::from_secs(10))
-            .await;
+        if !self.is_desktop() {
+            let _ = self
+                .evaluate("window.__rast.flush()".into(), Duration::from_secs(10))
+                .await;
+        }
         let frozen = self
             .cdp
             .call(
@@ -230,8 +371,87 @@ impl Window {
         Ok(answer["result"]["value"].clone())
     }
 
-    /// One method of the app's page command API.
+    /// What the app offers (it says so once it started).
+    async fn offers(&self) -> Offers {
+        if let Some(offers) = *lock(&self.offers) {
+            return offers;
+        }
+        if self.is_desktop() {
+            // It takes a file when its window opens files; it answers
+            // requests once its window has mounted (a moment after it
+            // opened), or never.
+            let documents = self.app.id == "files" || !self.app.opens.is_empty();
+            let mut commands = false;
+            for _ in 0..20 {
+                commands = self
+                    .evaluate(
+                        "window.__rastWindow.answers()".into(),
+                        Duration::from_secs(5),
+                    )
+                    .await
+                    .is_ok_and(|v| v == true);
+                if commands {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            let offers = Offers {
+                documents,
+                commands,
+            };
+            *lock(&self.offers) = Some(offers);
+            lock(&KNOWN).insert(self.app.id.clone(), offers);
+            return offers;
+        }
+        let said = self
+            .evaluate(
+                format!("window.__rast.offers({})", START_LIMIT.as_millis()),
+                START_LIMIT + Duration::from_secs(30),
+            )
+            .await
+            .unwrap_or(Value::Null);
+        let offers = Offers {
+            documents: said["documents"] == true,
+            commands: said["commands"] == true,
+        };
+        if said.is_object() {
+            *lock(&self.offers) = Some(offers);
+            lock(&KNOWN).insert(self.app.id.clone(), offers);
+        }
+        offers
+    }
+
+    /// One control method: the app's own when it has a command API (and
+    /// knows the method), the window's otherwise ([`by_hand`]).
     async fn request(&self, method: &str, params: &Value) -> Result<Value, String> {
+        if WINDOW_ONLY.contains(&method) {
+            return self.by_hand(method, params).await;
+        }
+        if !self.offers().await.commands {
+            if BY_HAND.contains(&method) {
+                return self.by_hand(method, params).await;
+            }
+            return Err(format!(
+                "{} takes no commands: look at it with ui.screenshot and work in it with ui.click, ui.text, ui.key, ui.scroll and ui.drag",
+                self.app.name
+            ));
+        }
+        self.app_request(method, params).await
+    }
+
+    /// One method of the app's page command API (its window's request
+    /// handler, for RAST's own window code).
+    async fn app_request(&self, method: &str, params: &Value) -> Result<Value, String> {
+        if self.is_desktop() {
+            let expression = format!(
+                "Promise.resolve(window.__rastWindow.request({}, {})).then((r) => r === undefined ? null : r)",
+                json!(method),
+                params
+            );
+            return self
+                .evaluate(expression, REQUEST_LIMIT + Duration::from_secs(10))
+                .await;
+        }
         let expression = format!(
             "window.__rast.request({}, {}, {}, {})",
             json!(method),
@@ -246,8 +466,15 @@ impl Window {
         .await
     }
 
-    /// Hand the app the person's file at `path`.
-    async fn open(&self, state: &Agent, path: &str) -> Result<(), String> {
+    /// Hand the app the person's file at `path`: open it in the app, or,
+    /// for an app that takes no documents from RAST, have it ready for the
+    /// app's file picker (false).
+    async fn open(&self, state: &Agent, path: &str) -> Result<bool, String> {
+        if self.is_desktop() {
+            self.open_with(&json!({ "path": path })).await?;
+            *lock(&self.path) = Some(path.to_string());
+            return Ok(true);
+        }
         let bytes = state.host.file_bytes(&self.owner, path).await?;
         if bytes.len() > MAX_DOCUMENT {
             return Err("the file is larger than 64 MB".into());
@@ -255,19 +482,288 @@ impl Window {
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
         drop(bytes);
-        self.evaluate(
+        let in_app = self.offers().await.documents;
+        let expression = if in_app {
             format!(
                 "window.__rast.open({}, \"{data}\", {})",
                 json!(name),
                 START_LIMIT.as_millis()
-            ),
-            START_LIMIT + Duration::from_secs(30),
-        )
-        .await?;
+            )
+        } else {
+            format!(
+                "window.__rast.stage({}, \"{data}\", {})",
+                json!(name),
+                json!(path)
+            )
+        };
+        self.evaluate(expression, START_LIMIT + Duration::from_secs(30))
+            .await?;
         *lock(&self.path) = Some(path.to_string());
         lock(&self.documents).insert(name, path.to_string());
         self.dirty.store(false, Ordering::Relaxed);
+        Ok(in_app)
+    }
+
+    /// Open the window of RAST's own window code again with these
+    /// parameters (`{path}`, Code Editor's `{path, line}`, …).
+    async fn open_with(&self, params: &Value) -> Result<(), String> {
+        let shown = self
+            .evaluate(
+                format!("window.__rastWindow.open({params})"),
+                Duration::from_secs(30),
+            )
+            .await?;
+        if shown != true {
+            return Err(format!("{} did not open for this account", self.app.name));
+        }
+        // Its window reads the parameters as it opens.
+        tokio::time::sleep(Duration::from_millis(800)).await;
         Ok(())
+    }
+
+    /// The window's own control methods, for every app: what a person does
+    /// with the mouse and keys, and a picture of the window.
+    async fn by_hand(&self, method: &str, params: &Value) -> Result<Value, String> {
+        let point = |x: &str, y: &str| -> Result<(f64, f64), String> {
+            let get = |name: &str, most: u32| {
+                params[name]
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v >= 0.0 && *v <= most as f64)
+                    .ok_or_else(|| {
+                        format!("{method}: {name} is a number from 0 to {most} (the window is {WIDTH}×{HEIGHT})")
+                    })
+            };
+            Ok((get(x, WIDTH)?, get(y, HEIGHT)?))
+        };
+        let answer = match method {
+            "ui.screenshot" => {
+                let shot = self
+                    .cdp
+                    .call_for(
+                        Some(&self.page),
+                        "Page.captureScreenshot",
+                        json!({"format": "png"}),
+                        Duration::from_secs(60),
+                    )
+                    .await?;
+                return Ok(json!({
+                    "png": shot["data"],
+                    "width": WIDTH,
+                    "height": HEIGHT,
+                }));
+            }
+            "app.open" => {
+                if !params.is_object() || params.as_object().is_some_and(|p| p.is_empty()) {
+                    return Err("app.open: give what the window opens, e.g. {path}".into());
+                }
+                if self.is_desktop() {
+                    self.open_with(params).await?;
+                    if let Some(path) = params["path"].as_str() {
+                        *lock(&self.path) = Some(path.to_string());
+                    }
+                    return Ok(Value::String(format!("{} opened it.", self.app.name)));
+                }
+                return Err("app.open: open a file in this app with open_app and its path".into());
+            }
+            "ui.inspect" if self.is_desktop() => {
+                let offers = self.offers().await;
+                let state = self
+                    .evaluate(
+                        "window.__rastWindow.state()".into(),
+                        Duration::from_secs(10),
+                    )
+                    .await
+                    .unwrap_or(Value::Null);
+                let text: String = self
+                    .evaluate("window.__rastWindow.text()".into(), Duration::from_secs(10))
+                    .await
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default()
+                    .chars()
+                    .take(6000)
+                    .collect();
+                return Ok(json!({
+                    "app": self.app.name,
+                    "window": {"width": WIDTH, "height": HEIGHT},
+                    "title": state["title"],
+                    "open": state["open"],
+                    "dialogs": state["dialogs"],
+                    "file": lock(&self.path).clone(),
+                    "takesCommands": offers.commands,
+                    "text": text,
+                    "how": "Look at it with ui.screenshot; work in it with ui.click, ui.text, ui.key, ui.scroll and ui.drag. app.open {path, ...} opens a file in it. It saves with its own Save, into the person's files.",
+                }));
+            }
+            "ui.inspect" => {
+                let offers = self.offers().await;
+                let open = lock(&self.path).clone();
+                return Ok(json!({
+                    "app": self.app.name,
+                    "window": {"width": WIDTH, "height": HEIGHT},
+                    "file": open,
+                    "takesCommands": offers.commands,
+                    "opensRastFiles": offers.documents,
+                    "how": if offers.documents {
+                        "Look at it with ui.screenshot; work in it with ui.click, ui.text, ui.key, ui.scroll and ui.drag."
+                    } else {
+                        "Look at it with ui.screenshot; work in it with ui.click, ui.text, ui.key, ui.scroll and ui.drag. It opens files with its own Open command: the file open_app named goes to its file picker. What it saves as a download goes into that file's folder."
+                    },
+                }));
+            }
+            "ui.move" => {
+                let (x, y) = point("x", "y")?;
+                self.mouse("mouseMoved", x, y, "none", 0).await?;
+                format!("moved to {x}, {y}")
+            }
+            "ui.click" => {
+                let (x, y) = point("x", "y")?;
+                let button = match params["button"].as_str().unwrap_or("left") {
+                    b @ ("left" | "right" | "middle") => b,
+                    other => {
+                        return Err(format!(
+                            "ui.click: button {other:?} is left, right or middle"
+                        ))
+                    }
+                };
+                let count = params["count"].as_u64().unwrap_or(1).clamp(1, 3);
+                self.mouse("mouseMoved", x, y, "none", 0).await?;
+                for n in 1..=count {
+                    self.mouse("mousePressed", x, y, button, n).await?;
+                    self.mouse("mouseReleased", x, y, button, n).await?;
+                }
+                format!("clicked at {x}, {y}")
+            }
+            "ui.drag" => {
+                let (x, y) = point("x", "y")?;
+                let (to_x, to_y) = point("toX", "toY")?;
+                self.mouse("mouseMoved", x, y, "none", 0).await?;
+                self.mouse("mousePressed", x, y, "left", 1).await?;
+                for step in 1..=12 {
+                    let f = step as f64 / 12.0;
+                    self.mouse(
+                        "mouseMoved",
+                        x + (to_x - x) * f,
+                        y + (to_y - y) * f,
+                        "left",
+                        0,
+                    )
+                    .await?;
+                    tokio::time::sleep(Duration::from_millis(16)).await;
+                }
+                self.mouse("mouseReleased", to_x, to_y, "left", 1).await?;
+                format!("dragged from {x}, {y} to {to_x}, {to_y}")
+            }
+            "ui.scroll" => {
+                let (x, y) = point("x", "y")?;
+                let dx = params["dx"]
+                    .as_f64()
+                    .unwrap_or(0.0)
+                    .clamp(-10_000.0, 10_000.0);
+                let dy = params["dy"]
+                    .as_f64()
+                    .unwrap_or(0.0)
+                    .clamp(-10_000.0, 10_000.0);
+                if dx == 0.0 && dy == 0.0 {
+                    return Err("ui.scroll: give dy (down when positive) or dx".into());
+                }
+                self.cdp
+                    .call(
+                        Some(&self.page),
+                        "Input.dispatchMouseEvent",
+                        json!({"type": "mouseWheel", "x": x, "y": y, "deltaX": dx, "deltaY": dy}),
+                    )
+                    .await?;
+                format!("scrolled at {x}, {y}")
+            }
+            "ui.text" => {
+                let text = params["text"].as_str().ok_or("ui.text: give text")?;
+                if text.chars().count() > MAX_TYPED {
+                    return Err(format!("ui.text: at most {MAX_TYPED} characters at a time"));
+                }
+                // Key by key: canvas apps read keys, not text input.
+                for ch in text.chars() {
+                    match ch {
+                        '\n' => self.key(&key_named("Enter")?, 0).await?,
+                        '\t' => self.key(&key_named("Tab")?, 0).await?,
+                        '\r' => {}
+                        ch => self.key(&key_typed(ch), 0).await?,
+                    }
+                }
+                format!("typed {} characters", text.chars().count())
+            }
+            "ui.key" => {
+                let name = params["key"].as_str().ok_or("ui.key: give key")?;
+                let key = key_named(name)?;
+                let on = |flag: &str| params[flag] == true;
+                // cmd is the command key of the app's shortcuts: Ctrl here.
+                let modifiers = (on("alt") as u32)
+                    | ((on("cmd") || on("ctrl")) as u32) << 1
+                    | (on("meta") as u32) << 2
+                    | (on("shift") as u32) << 3;
+                self.key(&key, modifiers).await?;
+                format!("pressed {name}")
+            }
+            other => return Err(format!("the window has no method {other}")),
+        };
+        // The app answers in its next frames; what it saved meanwhile is
+        // stored before the call ends.
+        if self.is_desktop() {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        } else {
+            let _ = self
+                .evaluate(
+                    "window.__rast.settle()".into(),
+                    SAVE_LIMIT + Duration::from_secs(10),
+                )
+                .await;
+        }
+        Ok(Value::String(format!("{}: {answer}.", self.app.name)))
+    }
+
+    async fn mouse(
+        &self,
+        kind: &str,
+        x: f64,
+        y: f64,
+        button: &str,
+        count: u64,
+    ) -> Result<(), String> {
+        self.cdp
+            .call(
+                Some(&self.page),
+                "Input.dispatchMouseEvent",
+                json!({"type": kind, "x": x, "y": y, "button": button, "clickCount": count,
+                       "buttons": if button == "none" || kind == "mouseReleased" { 0 } else { 1 }}),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    async fn key(&self, key: &KeyPress, modifiers: u32) -> Result<(), String> {
+        let mut down = json!({
+            "type": if key.text.is_some() && modifiers & 0b110 == 0 { "keyDown" } else { "rawKeyDown" },
+            "key": key.key,
+            "code": key.code,
+            "windowsVirtualKeyCode": key.key_code,
+            "modifiers": modifiers,
+        });
+        if let (Some(text), 0) = (&key.text, modifiers & 0b110) {
+            down["text"] = json!(text);
+            down["unmodifiedText"] = json!(text);
+        }
+        self.cdp
+            .call(Some(&self.page), "Input.dispatchKeyEvent", down)
+            .await?;
+        self.cdp
+            .call(
+                Some(&self.page),
+                "Input.dispatchKeyEvent",
+                json!({"type": "keyUp", "key": key.key, "code": key.code,
+                       "windowsVirtualKeyCode": key.key_code, "modifiers": modifiers}),
+            )
+            .await
+            .map(|_| ())
     }
 
     /// Answer one of the page's asking messages.
@@ -324,7 +820,7 @@ fn start_reaper(runs: Arc<Runs>) {
                     keys.iter().filter_map(|k| map.remove(k)).collect()
                 };
                 for window in &gone {
-                    if window.alive() {
+                    if window.alive() && !window.is_desktop() {
                         window.wake().await;
                         let _ = window
                             .evaluate("window.__rast.flush()".into(), Duration::from_secs(10))
@@ -395,9 +891,15 @@ async fn window_for(
     let last = last_paths().get(&key).cloned();
     if let (true, Some(path)) = (reopen, last) {
         match window.open(state, &path).await {
-            Ok(()) => {
+            Ok(true) => {
                 note = format!(
                     "{}'s window on the server started again (the last one closed): it has {path} open as last saved.\n",
+                    app.name
+                )
+            }
+            Ok(false) => {
+                note = format!(
+                    "{}'s window on the server started again (the last one closed): open {path} in it again with its Open command (its file picker gets the file as last saved).\n",
                     app.name
                 )
             }
@@ -427,36 +929,74 @@ async fn start(
         .host
         .local_address()
         .ok_or("this RAST runs no app windows on the server")?;
-    let page_path = state
-        .host
-        .app_page(user, &app.id)
-        .await
-        .ok_or_else(|| format!("{} is not a web page app this account may open", app.name))?;
+    let desktop = app.window == "desktop";
+    // A web page app's window frames its page; one of RAST's own window
+    // code is RAST's page itself, signed in as the account.
+    let (proxy_port, page_path, session) = if desktop {
+        if !state.host.window_sessions() {
+            return Err(format!(
+                "{} runs on the server with a newer RAST (host API 3)",
+                app.name
+            ));
+        }
+        let session = state.host.open_window_session(user).await?;
+        match browser::desktop_proxy_port(rast).await {
+            Ok(port) => (port, String::new(), Some(session)),
+            Err(error) => {
+                state.host.close_window_session(user.id, &session.id).await;
+                return Err(error);
+            }
+        }
+    } else {
+        let page =
+            state.host.app_page(user, &app.id).await.ok_or_else(|| {
+                format!("{} is not a web page app this account may open", app.name)
+            })?;
+        (browser::app_proxy_port(rast).await?, page, None)
+    };
     let launch = Launch {
         unit: "rast-app-window",
         description: "RAST app window",
-        proxy_port: browser::app_proxy_port(rast).await?,
+        proxy_port,
         memory: "3G",
         lifetime_secs: LIFETIME_SECS,
         // A share, not a cap: the app's WebAssembly compiles on every core
         // at once, and a cap stalls its drawing with it; the window gives
         // way to everything else on a busy server.
         cpu: "CPUWeight=20",
-        window: (1440, 900),
+        window: (WIDTH, HEIGHT),
         flags: FLAGS,
         max_message: 2 * MAX_DOCUMENT + 32 * 1024 * 1024,
     };
-    let cdp = browser::launch(state, user, &launch).await?;
+    let launched = browser::launch(state, user, &launch).await;
+    let cdp = match launched {
+        Ok(cdp) => cdp,
+        Err(error) => {
+            if let Some(session) = &session {
+                state.host.close_window_session(user.id, &session.id).await;
+            }
+            return Err(error);
+        }
+    };
     let events = cdp.events();
-    let (target, page) = prepare(&cdp, rast)
-        .await
-        .map_err(|e| browser::started_wrong(&cdp, &e))?;
+    let prepared = prepare(&cdp, rast).await;
+    let (target, page) = match prepared {
+        Ok(ready) => ready,
+        Err(error) => {
+            if let Some(session) = &session {
+                state.host.close_window_session(user.id, &session.id).await;
+            }
+            return Err(browser::started_wrong(&cdp, &error));
+        }
+    };
     let window = Arc::new(Window {
         cdp,
         page,
         app: app.clone(),
         owner: user.clone(),
         conversation: conversation.to_string(),
+        session: session.clone(),
+        host: state.host.clone(),
         path: Mutex::new(None),
         documents: Mutex::new(HashMap::new()),
         written: Mutex::new(HashSet::new()),
@@ -464,6 +1004,7 @@ async fn start(
         dirty: AtomicBool::new(false),
         gone: AtomicBool::new(false),
         frozen: AtomicBool::new(false),
+        offers: Mutex::new(None),
         last_used: AtomicI64::new(0),
         busy: tokio::sync::Mutex::new(()),
         saving: tokio::sync::Mutex::new(()),
@@ -476,31 +1017,55 @@ async fn start(
         origin(rast),
         target,
     ));
+    let (address, ready_test) = match &session {
+        Some(session) => {
+            window
+                .cdp
+                .call(
+                    Some(&window.page),
+                    "Network.setCookie",
+                    json!({
+                        "name": session.cookie,
+                        "value": session.token,
+                        "url": origin(rast),
+                        "path": "/",
+                        "httpOnly": true,
+                        "sameSite": "Lax",
+                    }),
+                )
+                .await?;
+            (
+                format!("{}/?window={}", origin(rast), app.id),
+                "typeof window.__rastWindow === 'object' && window.__rastWindow.state().open",
+            )
+        }
+        None => (
+            format!("{}{HOST_PATH}", origin(rast)),
+            "typeof window.__rast === 'object' && document.readyState !== 'loading'",
+        ),
+    };
     window
         .cdp
-        .call(
-            Some(&window.page),
-            "Page.navigate",
-            json!({"url": format!("{}{HOST_PATH}", origin(rast))}),
-        )
+        .call(Some(&window.page), "Page.navigate", json!({"url": address}))
         .await?;
+    let until = std::time::Instant::now() + START_LIMIT;
     let mut ready = false;
-    for _ in 0..100 {
+    while std::time::Instant::now() < until {
         if window
-            .evaluate(
-                "typeof window.__rast === 'object' && document.readyState !== 'loading'".into(),
-                Duration::from_secs(5),
-            )
+            .evaluate(ready_test.into(), Duration::from_secs(5))
             .await
             .is_ok_and(|v| v == true)
         {
             ready = true;
             break;
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
     if !ready {
         return Err(format!("{}'s window on the server did not start", app.name));
+    }
+    if desktop {
+        return Ok(window);
     }
     let local = local_items(state, user, &app.id).await;
     let config = json!({
@@ -582,10 +1147,32 @@ async fn prepare(cdp: &Cdp, rast: SocketAddr) -> Result<(String, String), String
         .to_string();
     cdp.call(Some(&page), "Page.enable", json!({})).await?;
     cdp.call(Some(&page), "Runtime.enable", json!({})).await?;
+    // The page is exactly the window's size (a headless window's page is
+    // shorter than the window): points and pictures agree.
+    cdp.call(
+        Some(&page),
+        "Emulation.setDeviceMetricsOverride",
+        json!({"width": WIDTH, "height": HEIGHT, "deviceScaleFactor": 1, "mobile": false}),
+    )
+    .await?;
     cdp.call(
         Some(&page),
         "Runtime.addBinding",
         json!({"name": "rastAgent"}),
+    )
+    .await?;
+    // The app's frame, before its scripts: in this process when Chrome keeps
+    // it here, in its own target otherwise (see `listen`).
+    cdp.call(
+        Some(&page),
+        "Page.addScriptToEvaluateOnNewDocument",
+        json!({"source": FRAME_SCRIPT}),
+    )
+    .await?;
+    cdp.call(
+        Some(&page),
+        "Target.setAutoAttach",
+        json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true}),
     )
     .await?;
     cdp.call(
@@ -615,7 +1202,47 @@ async fn listen(
         };
         let params = &event["params"];
         match event["method"].as_str().unwrap_or("") {
-            "Runtime.executionContextCreated" => {
+            "Target.attachedToTarget" if event["sessionId"] == win.page.as_str() => {
+                let Some(child) = params["sessionId"].as_str().map(str::to_string) else {
+                    continue;
+                };
+                let frame = params["targetInfo"]["type"] == "iframe";
+                let cdp = win.cdp.clone();
+                tokio::spawn(async move {
+                    if frame {
+                        // The frame waits for us: its first document is
+                        // there, its scripts have not run (runImmediately).
+                        let _ = cdp.call(Some(&child), "Page.enable", json!({})).await;
+                        // It stays on the app's page (a link it follows
+                        // would take the app, and its work, away).
+                        let _ = cdp
+                            .call(
+                                Some(&child),
+                                "Fetch.enable",
+                                json!({"patterns": [{"urlPattern": "*", "resourceType": "Document", "requestStage": "Request"}]}),
+                            )
+                            .await;
+                        let _ = cdp
+                            .call(
+                                Some(&child),
+                                "Page.addScriptToEvaluateOnNewDocument",
+                                json!({"source": FRAME_SCRIPT, "runImmediately": true}),
+                            )
+                            .await;
+                        let _ = cdp
+                            .call(
+                                Some(&child),
+                                "Target.setAutoAttach",
+                                json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}),
+                            )
+                            .await;
+                    }
+                    let _ = cdp
+                        .call(Some(&child), "Runtime.runIfWaitingForDebugger", json!({}))
+                        .await;
+                });
+            }
+            "Runtime.executionContextCreated" if event["sessionId"] == win.page.as_str() => {
                 let context = &params["context"];
                 if context["auxData"]["frameId"] == target.as_str()
                     && context["auxData"]["isDefault"] == true
@@ -626,12 +1253,40 @@ async fn listen(
                     }
                 }
             }
-            "Runtime.executionContextDestroyed" => {
+            "Runtime.executionContextDestroyed" if event["sessionId"] == win.page.as_str() => {
                 if let Some(id) = params["executionContextId"].as_i64() {
                     own_contexts.remove(&id);
                 }
             }
-            "Runtime.executionContextsCleared" => own_contexts.clear(),
+            "Runtime.executionContextsCleared" if event["sessionId"] == win.page.as_str() => {
+                own_contexts.clear()
+            }
+            "Fetch.requestPaused" if event["sessionId"] != win.page.as_str() => {
+                // A page the app's frame goes to: only RAST's app files.
+                let request = params["requestId"].clone();
+                let url = params["request"]["url"].as_str().unwrap_or("").to_string();
+                let stays = url.starts_with(&format!("{origin}/api/appweb/"));
+                if !stays {
+                    let shown: String = url.chars().take(300).collect();
+                    win.note(format!(
+                        "{} went to open {shown} in its window; the window stays on the app (open links with the browser tool).",
+                        win.app.name
+                    ));
+                }
+                let cdp = win.cdp.clone();
+                let session = event["sessionId"].as_str().map(str::to_string);
+                tokio::spawn(async move {
+                    let (method, params) = if stays {
+                        ("Fetch.continueRequest", json!({"requestId": request}))
+                    } else {
+                        (
+                            "Fetch.failRequest",
+                            json!({"requestId": request, "errorReason": "Aborted"}),
+                        )
+                    };
+                    let _ = cdp.call(session.as_deref(), method, params).await;
+                });
+            }
             "Fetch.requestPaused" => {
                 let request = params["requestId"].clone();
                 let url = params["request"]["url"].as_str().unwrap_or("");
@@ -670,7 +1325,8 @@ async fn listen(
                 });
             }
             "Runtime.bindingCalled"
-                if params["name"] == "rastAgent"
+                if event["sessionId"] == win.page.as_str()
+                    && params["name"] == "rastAgent"
                     && params["executionContextId"]
                         .as_i64()
                         .is_some_and(|id| own_contexts.contains(&id)) =>
@@ -683,7 +1339,9 @@ async fn listen(
                 let state = state.clone();
                 tokio::spawn(async move { told(&state, &win, message).await });
             }
-            "Inspector.targetCrashed" | "Inspector.detached" => {
+            "Inspector.targetCrashed" | "Inspector.detached"
+                if event["sessionId"] == win.page.as_str() =>
+            {
                 win.gone.store(true, Ordering::Relaxed);
                 win.note(format!(
                     "{}'s window on the server stopped (it may have run out of memory); the next call starts it again with the file as last saved.",
@@ -901,11 +1559,19 @@ pub async fn open(
     let _busy = window.busy.lock().await;
     window.wake().await;
     window.touch();
+    let offers = window.offers().await;
     let open = match path {
         Some(path) => {
-            window.open(state, path).await?;
+            let in_app = window.open(state, path).await?;
             last_paths().insert((conversation.to_string(), app.id.clone()), path.to_string());
-            format!("{} has {path} open", app.name)
+            if in_app {
+                format!("{} has {path} open", app.name)
+            } else {
+                format!(
+                    "{} opens files with its own Open command: {path} is ready for its file picker. Open it in the app (ui.screenshot, then ui.click its Open button or ui.key O with cmd)",
+                    app.name
+                )
+            }
         }
         None => match lock(&window.path).clone() {
             Some(path) => format!("{} has {path} open", app.name),
@@ -914,8 +1580,14 @@ pub async fn open(
     };
     window.touch();
     let notes = window.take_notes();
+    let how = match (offers.commands, offers.documents) {
+        (true, true) => "Run its save command to write the file back.",
+        (true, false) => "What it saves as a download goes into the file's folder (Home for a new one).",
+        (false, true) => "It takes no commands: look with ui.screenshot and work with ui.click, ui.text, ui.key, ui.scroll and ui.drag; save with its Save command (Save writes the file back).",
+        (false, false) => "It takes no commands: look with ui.screenshot and work with ui.click, ui.text, ui.key, ui.scroll and ui.drag. What it saves as a download goes into the file's folder (Home for a new one).",
+    };
     Ok(format!(
-        "{started}{notes}{open} in its window on the server: work in it with use_app (it keeps working when the person closes RAST; they see its pictures in the chat). Run its save command to write the file back."
+        "{started}{notes}{open} in its window on the server: work in it with use_app (it keeps working when the person closes RAST; they see its pictures in the chat). {how}"
     ))
 }
 

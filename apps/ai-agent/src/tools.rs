@@ -177,11 +177,37 @@ pub struct Available {
     /// file) works in the apps' windows on the server
     /// ([`super::app_window`]), not in the person's page.
     pub server_apps: bool,
+    /// The windows on the server include RAST's own window code (RAST's
+    /// window sessions, host API 3): `use_app` works in every app then.
+    pub desktop_apps: bool,
 }
+
+/// Apps `use_app` leaves alone even on the server: AI Agent itself, and
+/// Terminal (commands go through run_command and its rules).
+const NOT_IN_WINDOWS: [&str; 2] = ["agent", "terminal"];
 
 impl Available {
     pub fn has(&self, name: &str) -> bool {
         self.names.contains(&name)
+    }
+
+    /// Whether `use_app` works in `app`: one that takes commands (a web
+    /// page app), and on the server with RAST's window sessions every app
+    /// of RAST's own window code but [`NOT_IN_WINDOWS`].
+    pub fn works_in(&self, app: &super::host::HostApp) -> bool {
+        app.commands
+            || (self.desktop_apps
+                && app.window == "desktop"
+                && !NOT_IN_WINDOWS.contains(&app.id.as_str()))
+    }
+
+    /// The apps `use_app` works in.
+    pub fn usable_apps(&self) -> Vec<super::host::HostApp> {
+        self.apps
+            .iter()
+            .filter(|app| self.works_in(app))
+            .cloned()
+            .collect()
     }
 
     /// Keep only `allowed` (an agent's tool list; `None`: all).
@@ -232,7 +258,7 @@ impl Available {
                 if *name == OPEN_APP {
                     open_app_spec(&self.apps, self.server_apps && self.has(USE_APP))
                 } else if *name == USE_APP {
-                    super::use_app::spec(&self.apps, self.pictures, self.server_apps)
+                    super::use_app::spec(&self.usable_apps(), self.pictures, self.server_apps)
                 } else {
                     spec(name, self.shell, self.guarded)
                 }
@@ -283,9 +309,12 @@ pub async fn available(state: &Agent, user: &AuthUser) -> Available {
     if !out.apps.is_empty() {
         out.names.push(OPEN_APP);
     }
-    if out.apps.iter().any(|app| app.commands) {
-        out.names.push(USE_APP);
+    if !out.apps.is_empty() {
         out.server_apps = super::app_window::available(state).await;
+        out.desktop_apps = out.server_apps && state.host.window_sessions();
+    }
+    if out.apps.iter().any(|app| out.works_in(app)) {
+        out.names.push(USE_APP);
     }
     out
 }
@@ -487,8 +516,11 @@ pub fn open_app(available: &Available, input: &Value) -> Result<String, String> 
         .filter(|path| !path.is_empty());
     if let Some(path) = path {
         // Only File Station and apps that open files take a path; another
-        // would open without it.
-        if app.id != "files" && app.opens.is_empty() {
+        // would open without it. In its window on the server every app
+        // takes one: an app that opens files with its own Open command gets
+        // it at its file picker.
+        let on_server = available.server_apps && available.has(USE_APP) && app.commands;
+        if app.id != "files" && app.opens.is_empty() && !on_server {
             return Err(format!(
                 "{} opens no file from a path: open it without one (the person opens files from its own File menu)",
                 app.name
@@ -1831,6 +1863,7 @@ mod tests {
             description: format!("{name} does things."),
             opens: opens.iter().map(|o| o.to_string()).collect(),
             commands: false,
+            window: String::new(),
         };
         let apps = vec![
             app("files", "File Station", &[]),
@@ -1891,6 +1924,14 @@ mod tests {
             open_app(&available, &json!({"app": "photocraft"})).unwrap(),
             "PhotoCraft is open beside the chat."
         );
+        // In its window on the server it takes the file at its file picker.
+        let on_server = Available {
+            names: vec![OPEN_APP, USE_APP],
+            apps: vec![photo.clone()],
+            server_apps: true,
+            ..Available::default()
+        };
+        assert!(open_app(&on_server, &json!({"app": "photocraft", "path": "/a.png"})).is_ok());
         assert!(open_app_spec(&[photo], false)
             .unwrap()
             .description

@@ -30,6 +30,27 @@ to people is also in `ui/whats-new.ts`, shown once per version.
   run on the server. Needs RAST with host API 2 (`localUrl` in
   `/v1/info`), Chrome and the Terminal helper, as the browser tool does;
   otherwise the person's page does the work as before.
+- **Every app works on the server, also one without commands.** The
+  window answers its own control methods for every app, through Chrome's
+  input: `ui.screenshot`, `ui.click {x, y, button?, count?}`, `ui.text`
+  (key by key, for canvas apps), `ui.key`, `ui.scroll`, `ui.drag`,
+  `ui.move` and `ui.inspect`; an app with a command API of its own answers
+  the rest. The window is exactly 1440×900, so points and pictures agree.
+- **Apps that open files from the device work with RAST files.** In an
+  app that takes no documents from RAST (PhotoCraft, MaterialCraft and
+  the other Craft apps without RAST files), `open_app` with a path has the
+  file ready for the app's own Open: its file picker gets it. What the app
+  saves as a download is stored in the person's files, beside the open
+  file (`app_frame.js` in the app's frame, before its scripts). The app's
+  frame stays on the app: a link it follows is noted for the model, not
+  opened.
+- **RAST's own apps work on the server too (RAST host API 3).** Code
+  Editor, File Station and every other app but AI Agent and Terminal run
+  in a window of RAST's page on the server, signed in with a session RAST
+  opens for the window (listed in the person's Sessions, ended with the
+  window): `app.open {path, line?}` opens a file, `ui.inspect` reads the
+  window's text, and the app saves with its own Save. Its proxy reaches
+  all of RAST and the public web, nothing else of the server.
 
 ## [1.9.0] - 2026-11-28
 

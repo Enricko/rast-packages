@@ -135,17 +135,39 @@ pub fn reads(input: &Value) -> bool {
     }
 }
 
-/// `use_app`, naming the apps whose windows may take commands (`pictures`:
-/// the model reads the window pictures; `server`: it works in the apps'
-/// windows on the server, [`super::app_window`]).
+/// `use_app`, naming `apps` (the apps it works in, [`Available::works_in`];
+/// `pictures`: the model reads the window pictures; `server`: it works in
+/// the apps' windows on the server, [`super::app_window`]).
 pub fn spec(apps: &[HostApp], pictures: bool, server: bool) -> Option<ToolSpec> {
-    let apps: Vec<&HostApp> = apps.iter().filter(|app| app.commands).collect();
+    let apps: Vec<&HostApp> = apps.iter().collect();
     if apps.is_empty() {
         return None;
     }
     let list = apps
         .iter()
-        .map(|app| format!("- {} ({})", app.id, app.name))
+        .map(|app| {
+            let known = if server {
+                super::app_window::known_offers(&app.id)
+            } else {
+                None
+            };
+            let about = match known {
+                _ if app.window == "desktop" => {
+                    if app.id == "files" || !app.opens.is_empty() {
+                        "; RAST's own window: app.open {path} opens a file in it"
+                    } else {
+                        "; RAST's own window"
+                    }
+                }
+                Some(o) if !o.commands && !o.documents => {
+                    "; no commands of its own (the ui methods), opens files with its own Open command"
+                }
+                Some(o) if !o.commands => "; no commands of its own (the ui methods)",
+                Some(o) if !o.documents => "; opens files with its own Open command",
+                _ => "",
+            };
+            format!("- {} ({}{about})", app.id, app.name)
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let ids: Vec<&str> = apps.iter().map(|app| app.id.as_str()).collect();
@@ -154,15 +176,28 @@ pub fn spec(apps: &[HostApp], pictures: bool, server: bool) -> Option<ToolSpec> 
     } else {
         "a picture of the window, shown to the person in the chat (you get only its description)"
     };
-    let window = if server {
-        "Work inside one of the person's RAST apps, in a window of it that runs on the server for this chat, as the person would: read what it shows, run its commands, type into it. It keeps working when the person closes RAST; they see its pictures in the chat. It works on what the window has open: to work on one of the person's files, open it first with open_app and the file's path (otherwise the app starts a new document). Changes stay in the window until it saves: run its save command when the work is done or the person wants the file saved (Save writes the open file back to their files; Save As and exports go into the open file's folder). The window closes 30 minutes after the chat's reply ends, and what it has not saved goes with it."
+    let description = if server {
+        format!(
+            "Work inside one of the person's RAST apps, in a window of it that runs on the server for this chat, as the person would: look at it, click, type, run its commands. It keeps working when the person closes RAST; they see its pictures in the chat. It works on what the window has open: to work on one of the person's files, open it first with open_app and the file's path (otherwise the app starts a new document). Changes stay in the window until it saves: save when the work is done or the person wants the file saved (Save writes the open file back to their files; Save As, exports and downloads go into the open file's folder). The window closes 30 minutes after the chat's reply ends, and what it has not saved goes with it.\n\
+Methods of every app's window (the window is {w}×{h}; points are x from the left, y from the top, as in its picture):\n\
+- ui.screenshot {{}}: {screenshot}\n\
+- ui.click {{x, y, button?, count?}}: click at a point (button left, right or middle; count 2 double-clicks)\n\
+- ui.text {{text}}: type text at the cursor; ui.key {{key, shift?, alt?, cmd?}}: press a key (Enter, Tab, Escape, Left, Backspace, F2, B with cmd)\n\
+- ui.scroll {{x, y, dy?, dx?}}: scroll at a point (dy positive: down); ui.drag {{x, y, toX, toY}}: drag; ui.move {{x, y}}: point at\n\
+- ui.inspect {{}}: the window's state (for RAST's own windows also the text it shows)\n\
+- app.open {{path, line?}}: (RAST's own windows such as Code Editor and File Station) open a file or folder in it\n\
+Methods of an app with commands of its own (its control channel):\n\
+- engine.commands {{search?}}: the app's commands (id, label, params, enabled); search with a word, e.g. \"insert\", since the full list is long\n\
+- engine.execute {{command, params?}}: run a command by its id (WordCraft: text.insert {{text}}, file.save)\n\
+- document.inspect {{text?}}: what the open document holds\n\
+An app with no commands of its own says so: work in it by looking (ui.screenshot) and with the mouse and keys. An app that opens files with its own Open command gets the file open_app named at its file picker; what it saves as a download is stored in the person's files.\n\
+For a series of steps give calls: [{{method, params}}, …] instead of method and params: up to {MAX_CALLS} run in order in one go (much faster than one call each) and stop at the first that fails. Check your work (document.inspect, or a picture). The apps:\n{list}",
+            w = super::app_window::WINDOW_SIZE.0,
+            h = super::app_window::WINDOW_SIZE.1,
+        )
     } else {
-        "Work inside one of the person's RAST apps, in its window beside this chat, as the person would: read what it shows, run its commands, type into it. It works on what the window has open: to work on one of the person's files, open it first with open_app and the file's path. Changes stay in the app until it saves: run its save command when the person wants the file saved (Save writes the open file back to their files; Save As and exports ask the person where)."
-    };
-    Some(ToolSpec {
-        name: tools::USE_APP.into(),
-        description: format!(
-            "{window} Methods (the app's control channel):\n\
+        format!(
+            "Work inside one of the person's RAST apps, in its window beside this chat, as the person would: read what it shows, run its commands, type into it. It works on what the window has open: to work on one of the person's files, open it first with open_app and the file's path. Changes stay in the app until it saves: run its save command when the person wants the file saved (Save writes the open file back to their files; Save As and exports ask the person where). Methods (the app's control channel):\n\
 - engine.commands {{search?}}: the app's commands (id, label, params, enabled); search with a word, e.g. \"insert\", since the full list is long\n\
 - engine.execute {{command, params?}}: run a command by its id (WordCraft: text.insert {{text}}, file.save)\n\
 - document.inspect {{text?}}: what the open document holds\n\
@@ -171,7 +206,11 @@ pub fn spec(apps: &[HostApp], pictures: bool, server: bool) -> Option<ToolSpec> 
 - ui.click {{x, y}}: click at a point of the window\n\
 - ui.screenshot {{}}: {screenshot}\n\
 For a series of edits give calls: [{{method, params}}, …] instead of method and params: up to {MAX_CALLS} run in order in one go (much faster than one call each) and stop at the first that fails. Check your work with document.inspect. An app that has no commands says so. The apps:\n{list}"
-        ),
+        )
+    };
+    Some(ToolSpec {
+        name: tools::USE_APP.into(),
+        description,
         parameters: json!({
             "type": "object",
             "properties": {
@@ -215,12 +254,12 @@ pub fn check<'a>(
     let Some(app) = available
         .apps
         .iter()
-        .find(|app| app.id == app_id && app.commands)
+        .find(|app| app.id == app_id && available.works_in(app))
     else {
         let ids: Vec<&str> = available
             .apps
             .iter()
-            .filter(|app| app.commands)
+            .filter(|app| available.works_in(app))
             .map(|app| app.id.as_str())
             .collect();
         return Err(format!(
@@ -494,17 +533,23 @@ mod tests {
             description: String::new(),
             opens: Vec::new(),
             commands,
+            window: if commands { "web" } else { "desktop" }.into(),
         }
     }
 
     #[test]
     fn only_apps_that_take_commands_are_offered() {
-        assert!(spec(&[app("files", "File Station", false)], false, false).is_none());
+        assert!(spec(&[], false, false).is_none());
         let apps = [
             app("files", "File Station", false),
             app("wordcraft", "WordCraft", true),
         ];
-        let spec = spec(&apps, false, false).unwrap();
+        let in_page = Available {
+            names: vec![tools::USE_APP],
+            apps: apps.to_vec(),
+            ..Available::default()
+        };
+        let spec = spec(&in_page.usable_apps(), false, false).unwrap();
         assert_eq!(spec.name, "use_app");
         assert!(spec.description.contains("you get only its description"));
         assert!(spec
@@ -558,6 +603,50 @@ mod tests {
             &json!({"app": "wordcraft", "method": "ui.text", "params": {"text": big}})
         )
         .is_err());
+    }
+
+    #[test]
+    fn on_the_server_every_app_but_agent_and_terminal_is_offered() {
+        let apps = [
+            app("files", "File Station", false),
+            app("code", "Code Editor", false),
+            app("agent", "AI Agent", false),
+            app("terminal", "Terminal", false),
+            app("wordcraft", "WordCraft", true),
+        ];
+        let mut available = Available {
+            names: vec![tools::USE_APP],
+            apps: apps.to_vec(),
+            server_apps: true,
+            ..Available::default()
+        };
+        // Web page apps only, without RAST's window sessions.
+        let ids = |a: &Available| {
+            a.usable_apps()
+                .into_iter()
+                .map(|a| a.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&available), ["wordcraft"]);
+        available.desktop_apps = true;
+        assert_eq!(ids(&available), ["files", "code", "wordcraft"]);
+        assert!(check(
+            &available,
+            &json!({"app": "code", "method": "ui.screenshot"})
+        )
+        .is_ok());
+        assert!(check(
+            &available,
+            &json!({"app": "terminal", "method": "ui.text", "params": {"text": "ls"}})
+        )
+        .unwrap_err()
+        .contains("these may: files, code, wordcraft"));
+        let spec = spec(&available.usable_apps(), false, true).unwrap();
+        assert!(spec.description.contains("ui.drag {x, y, toX, toY}: drag"));
+        assert!(spec.description.contains("- app.open {path, line?}"));
+        assert!(spec
+            .description
+            .contains("- code (Code Editor; RAST's own window)"));
     }
 
     #[test]
