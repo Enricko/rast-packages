@@ -11,6 +11,15 @@ export interface Release {
 
 export const WHATS_NEW: Release[] = [
   {
+    version: "1.9.0",
+    date: "2026-11-28",
+    items: [
+      "Long jobs run to the end: a reply keeps working until the agent is done (an hour or more), without a limit on its steps. Stop ends it any time; spending limits still apply.",
+      "The agent does a series of edits in an app in one step (up to 50 commands), with one question to you: much faster and cheaper in WordCraft and the other Craft apps.",
+      "Models that read pictures see the app's window when the agent takes its picture, so they can check a layout.",
+    ],
+  },
+  {
     version: "1.8.0",
     date: "2026-11-28",
     items: [

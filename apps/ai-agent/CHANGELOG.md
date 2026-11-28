@@ -7,6 +7,38 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-28
+
+### Changed
+
+- **A reply runs until the model is done.** The limits of 25 model steps
+  per run and 200 tool calls per reply are gone: a job in an app may take
+  hours. The person's Stop and the accounts' spending and weekly limits
+  still end a reply.
+- **Long chats fit the model's window.** Before each step the chat is
+  fitted into about 60% of the model's context window (900,000 characters
+  at most): the oldest tool results, and the long strings of their calls,
+  are shortened 25 at a time, the newest 12 always kept whole. Cutting in
+  fixed chunks keeps the start of the request the same for many steps, so
+  the provider's cache of it stays good.
+- **Live updates of a long reply carry what changed.** A message past
+  256 KB goes to pages as its blocks from the first that changed
+  (`contentFrom`, `contentLength` in the event's message), within RAST's
+  2 MB event limit; very long outputs in an event are cut (`outputCut`).
+  Before, a reply past about 2 MB stopped updating pages, and the work in
+  apps that the page runs stopped with it.
+
+### Added
+
+- **A series of methods in one `use_app` call** (`calls`, up to 50): run in
+  order by the person's page, stopping at the first that fails, with one
+  question to the person; the model reads each method's answer.
+- **The model sees app windows.** A window picture (`ui.screenshot`) goes
+  to the model as an image after the call's result, for models that read
+  pictures (by family: Gemini, Claude, GPT-4o/4.1/5, o3/o4, Codex, Grok 4,
+  Llama 4, Pixtral, vision models); the newest 3 of a reply. A model that
+  refuses them gets the rest of the reply without them.
+
 ## [1.8.0] - 2026-11-28
 
 ### Added
