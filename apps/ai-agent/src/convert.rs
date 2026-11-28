@@ -32,8 +32,6 @@ const KEEP: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const RUN_SECS: u32 = 120;
 /// Where Ubuntu's LibreOffice keeps what each part brings.
 const REGISTRY: &str = "/usr/lib/libreoffice/share/registry";
-/// There when the LibreOffice installed is the build without a desktop.
-const NOGUI_CORE: &str = "/usr/share/doc/libreoffice-core-nogui";
 
 /// Conversions at a time (each one is a whole LibreOffice).
 static RUNNING: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(2));
@@ -57,19 +55,13 @@ impl Family {
         }
     }
 
-    /// The package that adds this part, of the same build as the
-    /// LibreOffice there (the `-nogui` parts and the others replace each
-    /// other's core).
-    fn package(self, nogui: bool) -> String {
-        let part = match self {
-            Self::Text => "libreoffice-writer",
-            Self::Sheet => "libreoffice-calc",
-            Self::Slides => "libreoffice-impress",
-        };
-        if nogui {
-            format!("{part}-nogui")
-        } else {
-            part.to_string()
+    /// The LibreOffice part that opens it (App Center → Server components
+    /// → LibreOffice adds what is missing, in the build that is there).
+    fn part(self) -> &'static str {
+        match self {
+            Self::Text => "Writer",
+            Self::Sheet => "Calc",
+            Self::Slides => "Impress",
         }
     }
 
@@ -153,15 +145,15 @@ pub async fn to_pdf(
     }
     if !soffice_installed() {
         return Err(
-            "Showing documents as pages needs LibreOffice on this server (an administrator can install it: sudo apt install libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui)"
+            "Showing documents as pages needs LibreOffice on this server: an administrator installs it in App Center (Server components → LibreOffice)"
                 .into(),
         );
     }
     if !Path::new(REGISTRY).join(family.registry()).exists() {
         return Err(format!(
-            "This server's LibreOffice opens no {} yet (an administrator can add it: sudo apt install {})",
+            "This server's LibreOffice opens no {} yet: an administrator adds {} in App Center (Server components → LibreOffice)",
             family.what(),
-            family.package(Path::new(NOGUI_CORE).exists())
+            family.part()
         ));
     }
     let _turn = RUNNING
@@ -422,8 +414,8 @@ mod tests {
         ));
         assert!(!looks_like("doc", b"PK\x03\x04"));
         assert!(looks_like("rtf", b"{\\rtf1\\ansi"));
-        assert_eq!(Family::Sheet.package(false), "libreoffice-calc");
-        assert_eq!(Family::Slides.package(true), "libreoffice-impress-nogui");
+        assert_eq!(Family::Sheet.part(), "Calc");
+        assert_eq!(Family::Slides.part(), "Impress");
     }
 
     #[test]

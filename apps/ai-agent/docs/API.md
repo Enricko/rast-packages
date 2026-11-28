@@ -315,10 +315,10 @@ them.
   capabilities, 1 GiB, 2 minutes, two at a time. The document goes in on the
   unit's standard input and the PDF comes out on its standard output, so the
   unit opens no file of the server.
-- Text documents need LibreOffice Writer, spreadsheets Calc, slides Impress
-  (`libreoffice-writer`/`-calc`/`-impress`, or their `-nogui` builds on a
-  server without a desktop); a missing part names the package of the same
-  build as the LibreOffice there.
+- Text documents need LibreOffice Writer, spreadsheets Calc, slides Impress.
+  A missing part says so, and an administrator adds it with one click in
+  App Center → Server components → LibreOffice (RAST 0.9.19; apt, in the
+  build that is there); the tab offers **Open App Center** to administrators.
 - A PDF is kept per account under the app's data (`converted/<account>/
   <sha256>.pdf`) for a week from its last use, so the same document opens at
   once.

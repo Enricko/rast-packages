@@ -141,13 +141,37 @@ export function createFileView(ctx: AppContext, start: ViewTarget): TabView {
   }
 
   function note(reason: string, hint?: string): void {
+    // What the server is missing, an administrator adds in App Center.
+    const install =
+      reason.includes("App Center") && ctx.store.isAdmin()
+        ? h(
+            "div",
+            { class: "ai-view-buttons" },
+            h(
+              "button",
+              { class: "btn btn-sm btn-primary", type: "button", onClick: () => ctx.openApp("packages", { component: "libreoffice" }) },
+              iconSvg("package", 14),
+              "Open App Center",
+            ),
+          )
+        : null;
     body.replaceChildren(
       h(
         "div",
         { class: "ai-view-note" },
         iconSvg("warning", 18),
         h("p", {}, reason),
-        h("p", { class: "small muted" }, hint ?? (target.external ? "Open it in a new tab, or download it." : "Download it to open it on this device.")),
+        install,
+        h(
+          "p",
+          { class: "small muted" },
+          hint ??
+            (install
+              ? "Once it is installed, Reload shows the pages."
+              : target.external
+                ? "Open it in a new tab, or download it."
+                : "Download it to open it on this device."),
+        ),
       ),
     );
   }
@@ -447,6 +471,16 @@ export function createFileView(ctx: AppContext, start: ViewTarget): TabView {
       );
       frame.setAttribute("referrerpolicy", "no-referrer");
       frame.setAttribute("allow", "fullscreen");
+      // A RAST whose page policy keeps other sites out of frames (before
+      // 0.9.19) blocks it: the card then.
+      const origin = new URL(page).origin;
+      const blocked = (event: SecurityPolicyViolationEvent) => {
+        if (event.effectiveDirective !== "frame-src" || !event.blockedURI.startsWith(origin) || !frame.isConnected) return;
+        document.removeEventListener("securitypolicyviolation", blocked);
+        if (current()) body.replaceChildren(pageCard(info, host, "this RAST keeps other sites out of its frames (RAST 0.9.19 lets them in)"));
+      };
+      document.addEventListener("securitypolicyviolation", blocked);
+      window.setTimeout(() => document.removeEventListener("securitypolicyviolation", blocked), 15_000);
       frame.src = page;
       body.replaceChildren(frame);
       return;
