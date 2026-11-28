@@ -1,0 +1,169 @@
+name: Code Editor
+
+# Code Editor's App Center package (`code-editor`), from apps/code-editor:
+# its window is checked and tested on every change; on a tag
+# `code-editor-v<version>` (or by hand) the window bundle is published as
+# the release of that tag here, one archive per target (the same window
+# files: there is no server program). The catalog workflow finds these
+# releases (packages.code-editor.releaseRepos), verifies them and lists them
+# in the signed catalog.
+#
+# The window builds with RAST's frontend at the commit in
+# apps/code-editor/rast-commit.txt (scripts/build-ui.sh).
+#
+# Release: bump `version` in apps/code-editor/package.json, add the
+# version's notes to CHANGELOG.md, then push the tag
+# `code-editor-v<that version>`.
+
+on:
+  push:
+    branches: [main]
+    tags: ["code-editor-v*"]
+    paths:
+      - "apps/code-editor/**"
+      - ".github/workflows/code-editor.yml"
+  pull_request:
+    paths:
+      - "apps/code-editor/**"
+      - ".github/workflows/code-editor.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Code Editor version to release, without the prefix (e.g. 1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-editor-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: apps/code-editor
+
+jobs:
+  window:
+    name: Window
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.version.outputs.release }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      rast_rev: ${{ steps.rast.outputs.rev }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: The pinned RAST commit
+        id: rast
+        run: |
+          set -euo pipefail
+          rev=$(tr -d '[:space:]' < rast-commit.txt)
+          [[ "$rev" =~ ^[0-9a-f]{40}$ ]] || { echo "rast-commit.txt names no commit" >&2; exit 1; }
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+      - name: Determine and check the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          source_version=$(node -p "require('./package.json').version")
+          grep -q "^## ${source_version}\$" CHANGELOG.md || {
+            echo "CHANGELOG.md has no notes for $source_version" >&2
+            exit 1
+          }
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            version="$INPUT_VERSION"
+          elif [[ "$GITHUB_REF" == refs/tags/code-editor-v* ]]; then
+            version="${GITHUB_REF_NAME#code-editor-v}"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "version=$source_version" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "not a version: '$version'" >&2
+            exit 1
+          fi
+          if [[ "$source_version" != "$version" ]]; then
+            echo "package.json says $source_version, the release is $version" >&2
+            exit 1
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=code-editor-v$version" >> "$GITHUB_OUTPUT"
+      - name: RAST at the pinned commit
+        uses: actions/checkout@v5
+        with:
+          repository: Enricko/rast
+          ref: ${{ steps.rast.outputs.rev }}
+          path: rast-src
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the frontend packages
+        run: |
+          set -euo pipefail
+          (cd ../../rast-src/frontend && npm ci --no-audit --no-fund)
+          npm ci --no-audit --no-fund
+      - name: Check, test and bundle the window
+        run: scripts/build-ui.sh ../../rast-src ui-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-editor-ui
+          path: apps/code-editor/ui-build
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish the release
+    needs: window
+    if: needs.window.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: code-editor-ui
+          path: apps/code-editor/code-editor/ui
+      - name: Assemble the package archives
+        run: |
+          set -euo pipefail
+          version="${{ needs.window.outputs.version }}"
+          test -s code-editor/ui/app.js
+          test -s code-editor/ui/app.css
+          cp ../../LICENSE code-editor/LICENSE
+          cp THIRD-PARTY-NOTICES.md code-editor/THIRD-PARTY-NOTICES.md
+          mkdir -p ../../dist
+          for target in linux-x86_64 linux-aarch64; do
+            archive="code-editor-${version}-${target}.tar.gz"
+            tar --owner=0 --group=0 --numeric-owner --sort=name --mtime='2000-01-01 00:00Z' \
+              -czf "../../dist/$archive" code-editor
+            tar -tzf "../../dist/$archive"
+          done
+          cd ../../dist
+          sha256sum code-editor-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 2
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/code-editor-*.tar.gz
+            dist/SHA256SUMS
+      - name: Publish (not marked latest)
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${{ needs.window.outputs.version }}"
+          tag="${{ needs.window.outputs.tag }}"
+          notes="Code Editor ${version} for RAST's App Center (package code-editor). Installed and updated from App Center. Built with RAST's frontend at ${{ needs.window.outputs.rast_rev }}."
+          gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "Code Editor ${version}" --notes "$notes" --latest=false
