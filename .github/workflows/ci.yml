@@ -10,7 +10,7 @@ permissions:
 
 env:
   # RAST release that ships the Rust catalog commands.
-  RAST_VERSION: "0.9.19"
+  RAST_VERSION: "0.9.20"
 
 jobs:
   test:
