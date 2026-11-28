@@ -46,10 +46,6 @@ use crate::{audit::AuditLog, auth::AuthUser, db::now_ms};
 
 /// How often streamed text is published.
 const PUBLISH_EVERY: Duration = Duration::from_millis(120);
-/// Model calls in one run before it stops and leaves the rest to the owner.
-pub const MAX_STEPS: usize = 25;
-/// Tool calls in one reply.
-pub const MAX_TOOL_CALLS: usize = 200;
 /// Tries again after a passing failure, in a row (a step that works starts
 /// the count again).
 pub const RETRY_TRIES: u32 = 10;
@@ -134,6 +130,8 @@ pub struct Active {
     /// Retry now: ends the wait before a try again.
     retry_now: Notify,
     snapshot: Mutex<Snapshot>,
+    /// The blocks pages last heard (live events carry what changed since).
+    published: Mutex<Vec<Value>>,
 }
 
 impl Active {
@@ -281,6 +279,9 @@ impl Reservation {
         self.armed = false;
         self.run.message_id.store(job.message_id, Ordering::Relaxed);
         self.run.with(|s| s.blocks = job.blocks.clone());
+        if let Ok(mut published) = self.run.published.lock() {
+            *published = job.blocks.clone();
+        }
         let runs = self.runs.clone();
         let run = self.run.clone();
         tokio::spawn(async move {
@@ -317,24 +318,21 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
     let history = std::mem::take(&mut job.request.messages);
     let mut tokens = job.tokens;
     let mut tools_on = !job.request.tools.is_empty();
-    let mut steps = 0usize;
+    // A reply runs until the model is done (or the owner stops it): the chat
+    // is fitted into the model's window before each step.
+    let budget = super::context::budget(&job.model, job.request.system.len());
+    let mut pictures_on = super::context::sees_images(&job.model);
     // Tries again since the last step that worked.
     let mut retries = 0u32;
     let end = loop {
         if !run_allowed_tools(state, run, &job, tokens).await || run.cancelled() {
             break End::Stopped;
         }
-        if steps >= MAX_STEPS {
-            break End::Failed(format!(
-                "The agent stopped after {MAX_STEPS} steps in a row. Send a message to let it go on."
-            ));
-        }
         if !job.owner.is_admin() {
             if let Err(error) = super::check_allowance(&state.db, job.owner.id, &job.limits).await {
                 break End::Failed(error.public_message());
             }
         }
-        steps += 1;
         let mut request = job.request.clone();
         if !tools_on {
             request.tools.clear();
@@ -344,6 +342,18 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
         request
             .messages
             .extend(super::turns_of(&Value::Array(before.clone())));
+        super::context::fit(&mut request.messages, budget);
+        let pictures = if pictures_on && tools_on {
+            super::context::show_pictures(
+                &mut request.messages,
+                &super::context::pictures(&before),
+                state.data_dir(),
+                job.owner.id,
+            )
+            .await
+        } else {
+            0
+        };
         match stream_step(state, run, &job, request).await {
             Step::Stopped(usage, ms) => {
                 count(state, &job, &mut tokens, usage, ms).await;
@@ -355,7 +365,6 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
                     super::accounts::rest(&state.db, &job.account_id, &limit, now_ms()).await;
                 if !wrote && next_account(state, &mut job).await {
                     tracing::info!(provider = %job.provider_id, account = %job.account_id, reason = %limit.reason, "AI account reached a limit; the next account answers");
-                    steps -= 1;
                     continue;
                 }
                 break End::Failed(limited(state, &job, error.message, until).await);
@@ -363,7 +372,10 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
             Step::Failed { error, wrote } if error.tools_refused && tools_on && !wrote => {
                 tracing::info!(model = %job.model, error = %error.message, "AI model refused tools; answering without them");
                 tools_on = false;
-                steps -= 1;
+            }
+            Step::Failed { error, wrote } if pictures > 0 && !wrote && !error.transient => {
+                tracing::info!(model = %job.model, error = %error.message, "AI model refused the window pictures; going on without them");
+                pictures_on = false;
             }
             Step::Failed { error, wrote } if error.transient && retries < RETRY_TRIES => {
                 retries += 1;
@@ -375,7 +387,6 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
                 if !wait_to_retry(state, run, &job, tokens, retries, &error.message).await {
                     break End::Stopped;
                 }
-                steps -= 1;
             }
             Step::Failed { error, .. } if error.transient => {
                 break End::Failed(format!(
@@ -407,7 +418,7 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
                 if calls.is_empty() {
                     break End::Done;
                 }
-                let (too_many, waiting) = run.with(|s| {
+                let waiting = run.with(|s| {
                     for call in &calls {
                         let status = if !job.tools.has(&call.name) {
                             "error"
@@ -429,15 +440,8 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
                         }
                         s.blocks.push(block);
                     }
-                    let used = s.blocks.iter().filter(|b| super::is_tool_block(b)).count();
-                    let waiting = s.blocks.iter().any(|b| b["status"] == "pending");
-                    (used > MAX_TOOL_CALLS, waiting)
+                    s.blocks.iter().any(|b| b["status"] == "pending")
                 });
-                if too_many {
-                    break End::Failed(format!(
-                        "The agent asked for more than {MAX_TOOL_CALLS} tool calls in one reply and was stopped."
-                    ));
-                }
                 if waiting {
                     break End::Waiting;
                 }
@@ -473,7 +477,7 @@ async fn reply(state: &Agent, runs: &Runs, run: &Arc<Active>, mut job: ReplyJob)
     // Stored and counted: the conversation takes the next message now
     // (before pages hear the reply ended and send one).
     runs.finish(&job.conversation_id, run);
-    publish_message(state, &job, false, 0, None).await;
+    publish_message(state, run, &job, false, 0, None).await;
     if let Ok(Some(conversation)) = super::conversation(&state.db, &job.conversation_id).await {
         state.host.publish_user_and_admin(
             "ai.conversation",
@@ -787,7 +791,7 @@ async fn wait_to_retry(
         s.seq
     });
     if go_on {
-        publish_message(state, job, true, seq, None).await;
+        publish_message(state, run, job, true, seq, None).await;
     }
     go_on
 }
@@ -799,11 +803,14 @@ async fn progress(state: &Agent, run: &Arc<Active>, job: &ReplyJob, tokens: Tall
     if let Err(e) = store(&state.db, job, &content, "streaming", "", tokens, None).await {
         tracing::warn!(error = %e, "could not store an AI reply");
     }
-    publish_message(state, job, true, seq, retry.as_ref()).await;
+    publish_message(state, run, job, true, seq, retry.as_ref()).await;
 }
 
+/// Tell pages about the reply: a long one only by the blocks that changed
+/// since they last heard ([`super::live_message`]).
 async fn publish_message(
     state: &Agent,
+    run: &Arc<Active>,
     job: &ReplyJob,
     running: bool,
     seq: u64,
@@ -811,9 +818,23 @@ async fn publish_message(
 ) {
     if let Ok(Some(message)) = super::message(&state.db, job.message_id).await {
         let mut message = message.json();
+        let content = message["content"].as_array().cloned().unwrap_or_default();
+        let from = match run.published.lock() {
+            Ok(mut published) => {
+                let same = published
+                    .iter()
+                    .zip(&content)
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                *published = content;
+                same
+            }
+            Err(_) => 0,
+        };
         if let Some(retry) = retry {
             message["retry"] = retry.json(now_ms());
         }
+        let message = super::live_message(message, from);
         state.host.publish_user_and_admin(
             "ai.message",
             job.owner.id,

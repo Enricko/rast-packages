@@ -16,6 +16,8 @@ export interface ToolBlock {
   input: Record<string, unknown> | string;
   status: ToolStatus;
   output?: string;
+  /** The output was cut for a live event (the chat, opened again, has all of it). */
+  outputCut?: boolean;
   error?: string;
   /** The browser's screenshot of the page after the step (a file of the chat). */
   image?: Omit<FileBlock, "type">;
@@ -287,6 +289,28 @@ export interface MessageEvent {
   running: boolean;
   /** Deltas of the running reply already in `message`. */
   seq?: number;
+}
+
+/** A message as a live event carries it: a long one with only its blocks from `contentFrom` on. */
+export type LiveMessage = Message & {
+  /** The first block it carries (the page keeps those before)… */
+  contentFrom?: number;
+  /** …and how many blocks the message has in all. */
+  contentLength?: number;
+};
+
+/**
+ * The whole message a live event tells about: a long one comes with only its
+ * blocks from `contentFrom` on, put after the blocks this page has. Null when
+ * the page's copy is behind (the chat is read again).
+ */
+export function wholeMessage(known: Message | undefined, event: MessageEvent): Message | null {
+  const { contentFrom, contentLength, ...message } = event.message as LiveMessage;
+  if (typeof contentFrom !== "number") return event.message;
+  if (!known || known.content.length < contentFrom) return null;
+  const content = known.content.slice(0, contentFrom).concat(message.content);
+  if (typeof contentLength === "number" && content.length !== contentLength) return null;
+  return { ...message, content };
 }
 
 export interface ConversationEvent {
@@ -779,12 +803,39 @@ export const TOOL_INFO: Record<string, { label: string; doing: string; arg: stri
   use_app: { label: "Work in an app", doing: "Working in", arg: "app", icon: "apps" },
 };
 
-/** What a `use_app` call asks of an app's window: its control method and parameters. */
-export function useAppCall(block: Pick<ToolBlock, "name" | "input">): { app: string; method: string; params: Record<string, unknown> } | null {
+/** One control method of a `use_app` call and its parameters. */
+export interface AppStep {
+  method: string;
+  params: Record<string, unknown>;
+}
+
+function appStep(raw: unknown): AppStep | null {
+  if (!raw || typeof raw !== "object") return null;
+  const { method, params } = raw as Record<string, unknown>;
+  if (typeof method !== "string" || !method) return null;
+  return { method, params: params && typeof params === "object" && !Array.isArray(params) ? (params as Record<string, unknown>) : {} };
+}
+
+/**
+ * What a `use_app` call asks of an app's window: its control methods, one
+ * (`method`, `params`) or a series (`calls`, run in order, `batch`).
+ */
+export function useAppCall(block: Pick<ToolBlock, "name" | "input">): { app: string; steps: AppStep[]; batch: boolean } | null {
   if (block.name !== "use_app" || !block.input || typeof block.input !== "object") return null;
-  const { app, method, params } = block.input;
-  if (typeof app !== "string" || !app || typeof method !== "string" || !method) return null;
-  return { app, method, params: params && typeof params === "object" && !Array.isArray(params) ? (params as Record<string, unknown>) : {} };
+  const { app, calls } = block.input;
+  if (typeof app !== "string" || !app) return null;
+  if (Array.isArray(calls)) {
+    const steps = calls.map(appStep);
+    if (!steps.length || steps.some((step) => !step)) return null;
+    return { app, steps: steps as AppStep[], batch: true };
+  }
+  const step = appStep(block.input);
+  return step ? { app, steps: [step], batch: false } : null;
+}
+
+/** A control method as a card names it: a command it runs by its id. */
+export function appStepName(step: AppStep): string {
+  return step.method === "engine.execute" && typeof step.params.command === "string" && step.params.command ? step.params.command : step.method;
 }
 
 /** What an `open_app` call opens: the app and its parameters (`{ path, line }`). */
@@ -922,8 +973,10 @@ export function toolArgument(block: Pick<ToolBlock, "name" | "input">, appName: 
   }
   const uses = useAppCall(block);
   if (uses) {
-    const command = uses.method === "engine.execute" && typeof uses.params.command === "string" ? uses.params.command : "";
-    return `${appName(uses.app)} · ${command || uses.method}`;
+    const [step] = uses.steps;
+    const first = step ? appStepName(step) : "";
+    const more = uses.steps.length - 1;
+    return `${appName(uses.app)} · ${first}${more ? ` and ${more} more` : ""}`;
   }
   if (block.name === "browser" && block.input) return browserStep(block.input);
   const value = block.input?.[key];

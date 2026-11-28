@@ -26,6 +26,7 @@ import {
   timeLeft,
   usageBars,
   type ChatQuotaAccount,
+  type ContentBlock,
   type Message,
 } from "../src/apps/agent/model";
 import {
@@ -54,10 +55,12 @@ import {
   messageText,
   toolArgument,
   useAppCall,
+  wholeMessage,
   chatArtifacts,
   artifactFileName,
   artifactSlug,
   upsertMessage,
+  type ContentBlock,
   type ContentBlock,
   type Message,
   EFFORTS,
@@ -213,11 +216,41 @@ test("work in an app shows the app and the command", () => {
   const insert = { name: "use_app", input: { app: "wordcraft", method: "engine.execute", params: { command: "text.insert", params: { text: "Hi" } } } };
   assert.equal(toolArgument(insert, names), "WordCraft · text.insert");
   assert.equal(toolArgument({ name: "use_app", input: { app: "wordcraft", method: "document.inspect" } }, names), "WordCraft · document.inspect");
-  assert.deepEqual(useAppCall(insert), { app: "wordcraft", method: "engine.execute", params: { command: "text.insert", params: { text: "Hi" } } });
-  assert.deepEqual(useAppCall({ name: "use_app", input: { app: "wordcraft", method: "ui.inspect", params: [1] } }), { app: "wordcraft", method: "ui.inspect", params: {} });
+  assert.deepEqual(useAppCall(insert), { app: "wordcraft", steps: [{ method: "engine.execute", params: { command: "text.insert", params: { text: "Hi" } } }], batch: false });
+  assert.deepEqual(useAppCall({ name: "use_app", input: { app: "wordcraft", method: "ui.inspect", params: [1] } }), { app: "wordcraft", steps: [{ method: "ui.inspect", params: {} }], batch: false });
   assert.equal(useAppCall({ name: "use_app", input: { app: "wordcraft" } }), null);
   assert.equal(useAppCall({ name: "open_app", input: { app: "wordcraft", method: "x.y" } }), null);
   assert.equal(maySkipAsking("use_app"), true);
+
+  // A series of methods in one call.
+  const series = {
+    name: "use_app",
+    input: { app: "wordcraft", calls: [{ method: "engine.execute", params: { command: "shape.fill" } }, { method: "engine.execute", params: { command: "shape.outline" } }, { method: "ui.screenshot" }] },
+  };
+  assert.equal(toolArgument(series, names), "WordCraft · shape.fill and 2 more");
+  assert.deepEqual(useAppCall(series)?.steps.map((step) => step.method), ["engine.execute", "engine.execute", "ui.screenshot"]);
+  assert.equal(useAppCall(series)?.batch, true);
+  assert.equal(useAppCall({ name: "use_app", input: { app: "wordcraft", calls: [] } }), null);
+  assert.equal(useAppCall({ name: "use_app", input: { app: "wordcraft", calls: [{ method: "ui.inspect" }, { params: {} }] } }), null);
+});
+
+test("a long reply's live event puts its newest blocks after the page's", () => {
+  const block = (n: number): ContentBlock => ({ type: "tool", id: `c${n}`, name: "use_app", input: {}, status: "done", output: `${n}` });
+  const known = { ...message(5, "streaming"), content: [block(0), block(1), block(2)] };
+  const event = (content: ContentBlock[], from?: number, length?: number) => ({
+    conversationId: "c",
+    running: true,
+    message: { ...message(5, "streaming"), content, ...(from === undefined ? {} : { contentFrom: from, contentLength: length }) },
+  });
+  const whole = event([block(9)]);
+  assert.equal(wholeMessage(known, whole), whole.message);
+  const merged = wholeMessage(known, event([{ ...block(2), output: "two" }, block(3)], 2, 4));
+  assert.deepEqual(merged?.content.map((b) => (b as { output?: string }).output), ["0", "1", "two", "3"]);
+  assert.equal(merged?.status, "streaming");
+  assert.equal("contentFrom" in (merged ?? {}), false);
+  assert.equal(wholeMessage(known, event([block(5)], 5, 6)), null);
+  assert.equal(wholeMessage(undefined, event([block(3)], 3, 4)), null);
+  assert.equal(wholeMessage(known, event([block(3)], 3, 9)), null);
 });
 
 test("messages stay in id order", () => {

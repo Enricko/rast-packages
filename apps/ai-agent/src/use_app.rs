@@ -8,9 +8,15 @@
 //! answered (`POST /api/ai/conversations/{id}/tools/{callId}/answer`), while
 //! the reply waits for it ([`Pages`]).
 //!
+//! One call runs one method, or several in order (`calls`, up to
+//! [`MAX_CALLS`]: one step of the model and one question to the person for
+//! a whole series of edits).
+//!
 //! Reading (`engine.commands`, `document.inspect`, `ui.inspect`,
 //! `ui.screenshot`, `ui.render`) never asks first; every other method changes
-//! what the app shows and asks, as other tools that act do.
+//! what the app shows and asks, as other tools that act do. A picture of the
+//! window goes to the chat, and to the model when it reads pictures
+//! ([`super::context`]).
 
 use std::{collections::HashMap, sync::Mutex, time::Duration};
 
@@ -35,8 +41,16 @@ pub const READ_METHODS: [&str; 5] = [
 /// How long a call waits for the page: the app may still be starting (its
 /// files are tens of megabytes the first time).
 pub const WAIT: Duration = Duration::from_secs(150);
-/// Largest `params` a call sends.
+/// The wait grows by this for each further method of a series.
+const STEP_WAIT: Duration = Duration::from_secs(45);
+/// The longest wait, however long the series.
+const MAX_WAIT: Duration = Duration::from_secs(30 * 60);
+/// Methods one call runs at most.
+pub const MAX_CALLS: usize = 50;
+/// Largest `params` a call sends (all of a series').
 const MAX_PARAMS_BYTES: usize = 200 * 1024;
+/// Longest answer of one method of a series the model gets.
+const MAX_STEP_CHARS: usize = 8000;
 /// Longest error a page's answer carries.
 const MAX_ERROR_CHARS: usize = 2000;
 
@@ -110,14 +124,20 @@ pub fn answer_of(ok: bool, result: Value, error: &str) -> Answer {
 
 /// Whether the call only reads what the app shows (it never asks first).
 pub fn reads(input: &Value) -> bool {
-    input
-        .get("method")
-        .and_then(Value::as_str)
-        .is_some_and(|method| READ_METHODS.contains(&method.trim()))
+    let read = |call: &Value| {
+        call.get("method")
+            .and_then(Value::as_str)
+            .is_some_and(|method| READ_METHODS.contains(&method.trim()))
+    };
+    match input.get("calls").and_then(Value::as_array) {
+        Some(calls) => !calls.is_empty() && calls.iter().all(read),
+        None => read(input),
+    }
 }
 
-/// `use_app`, naming the apps whose windows may take commands.
-pub fn spec(apps: &[HostApp]) -> Option<ToolSpec> {
+/// `use_app`, naming the apps whose windows may take commands (`pictures`:
+/// the model reads the window pictures).
+pub fn spec(apps: &[HostApp], pictures: bool) -> Option<ToolSpec> {
     let apps: Vec<&HostApp> = apps.iter().filter(|app| app.commands).collect();
     if apps.is_empty() {
         return None;
@@ -128,6 +148,11 @@ pub fn spec(apps: &[HostApp]) -> Option<ToolSpec> {
         .collect::<Vec<_>>()
         .join("\n");
     let ids: Vec<&str> = apps.iter().map(|app| app.id.as_str()).collect();
+    let screenshot = if pictures {
+        "a picture of the window: you see it right after the call's result (and the person sees it in the chat); look at it to check a layout"
+    } else {
+        "a picture of the window, shown to the person in the chat (you get only its description)"
+    };
     Some(ToolSpec {
         name: tools::USE_APP.into(),
         description: format!(
@@ -138,8 +163,8 @@ pub fn spec(apps: &[HostApp]) -> Option<ToolSpec> {
 - ui.inspect {{}}: the window's state (tab, dialog, selection, open documents)\n\
 - ui.text {{text}}: type text at the cursor; ui.key {{key, shift?, alt?, cmd?}}: press a key (Enter, Tab, Left, B with cmd)\n\
 - ui.click {{x, y}}: click at a point of the window\n\
-- ui.screenshot {{}}: a picture of the window, shown to the person in the chat (you get only its description)\n\
-Check your work with document.inspect. An app that has no commands says so. The apps:\n{list}"
+- ui.screenshot {{}}: {screenshot}\n\
+For a series of edits give calls: [{{method, params}}, …] instead of method and params: up to {MAX_CALLS} run in order in one go (much faster than one call each) and stop at the first that fails. Check your work with document.inspect. An app that has no commands says so. The apps:\n{list}"
         ),
         parameters: json!({
             "type": "object",
@@ -147,17 +172,35 @@ Check your work with document.inspect. An app that has no commands says so. The 
                 "app": {"type": "string", "enum": ids, "description": "The app's id"},
                 "method": {"type": "string", "description": "A control method, e.g. engine.execute"},
                 "params": {"type": "object", "description": "The method's parameters"},
+                "calls": {
+                    "type": "array",
+                    "maxItems": MAX_CALLS,
+                    "description": "Several methods to run in order, instead of method and params",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "method": {"type": "string"},
+                            "params": {"type": "object"},
+                        },
+                        "required": ["method"],
+                    },
+                },
             },
-            "required": ["app", "method"],
+            "required": ["app"],
         }),
     })
 }
 
-/// The call, checked: the app, the method and its parameters.
+/// One method of a call and its parameters.
+pub type Method = (String, Value);
+/// A picture an answer carried: by which method, and its PNG.
+type Taken = Option<(usize, Vec<u8>)>;
+
+/// The call, checked: the app, its methods and whether it is a series.
 pub fn check<'a>(
     available: &'a Available,
     input: &Value,
-) -> Result<(&'a HostApp, String, Value), String> {
+) -> Result<(&'a HostApp, Vec<Method>, bool), String> {
     let app_id = input
         .get("app")
         .and_then(Value::as_str)
@@ -179,7 +222,38 @@ pub fn check<'a>(
             ids.join(", ")
         ));
     };
-    let method = input
+    let (methods, batch) = match input.get("calls") {
+        None | Some(Value::Null) => (vec![method_of(input)?], false),
+        Some(Value::Array(calls)) if calls.is_empty() => {
+            return Err("calls lists at least one method".into())
+        }
+        Some(Value::Array(calls)) if calls.len() > MAX_CALLS => {
+            return Err(format!(
+                "calls lists at most {MAX_CALLS} methods: split the series"
+            ))
+        }
+        Some(Value::Array(calls)) => (
+            calls
+                .iter()
+                .enumerate()
+                .map(|(n, call)| method_of(call).map_err(|e| format!("calls[{n}]: {e}")))
+                .collect::<Result<Vec<_>, _>>()?,
+            true,
+        ),
+        Some(_) => return Err("calls is a list of {method, params}".into()),
+    };
+    let size: usize = methods.iter().map(|(_, p)| p.to_string().len()).sum();
+    if size > MAX_PARAMS_BYTES {
+        return Err(format!(
+            "params is larger than {} KB",
+            MAX_PARAMS_BYTES / 1024
+        ));
+    }
+    Ok((app, methods, batch))
+}
+
+fn method_of(call: &Value) -> Result<Method, String> {
+    let method = call
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or("")
@@ -193,18 +267,21 @@ pub fn check<'a>(
     if !well_formed {
         return Err("give a control method, such as engine.execute or document.inspect".into());
     }
-    let params = match input.get("params") {
+    let params = match call.get("params") {
         None | Some(Value::Null) => json!({}),
         Some(Value::Object(map)) => Value::Object(map.clone()),
         Some(_) => return Err("params is an object".into()),
     };
-    if params.to_string().len() > MAX_PARAMS_BYTES {
-        return Err(format!(
-            "params is larger than {} KB",
-            MAX_PARAMS_BYTES / 1024
-        ));
+    Ok((method.to_string(), params))
+}
+
+/// A method as the model and the person read it (`engine.execute` by its
+/// command).
+fn label(method: &str, params: &Value) -> String {
+    match params.get("command").and_then(Value::as_str) {
+        Some(command) if method == "engine.execute" => format!("{method} {command}"),
+        _ => method.to_string(),
     }
-    Ok((app, method.to_string(), params))
 }
 
 /// Run the call: wait for the person's page to answer it.
@@ -216,34 +293,42 @@ pub async fn run(
     input: &Value,
     answer: oneshot::Receiver<Answer>,
 ) -> Result<Output, String> {
-    let (app, method, _) = check(available, input)?;
-    match tokio::time::timeout(WAIT, answer).await {
-        Ok(Ok(Answer::Done(result))) => Ok(output(state, user, conversation, app, &method, result).await),
-        Ok(Ok(Answer::Failed(error))) => Err(format!("{}: {error}", app.name)),
-        Ok(Err(_)) => Err("the reply stopped waiting for the person's page".into()),
-        Err(_) => Err(format!(
-            "{} did not answer in {} seconds. The app works in the browser tab that started this reply: RAST must stay open there (a tab in the background may pause the app).",
-            app.name,
-            WAIT.as_secs()
-        )),
-    }
-}
-
-/// What the model gets: the answer as text; a picture goes to the chat.
-async fn output(
-    state: &Agent,
-    user: &AuthUser,
-    conversation: &str,
-    app: &HostApp,
-    method: &str,
-    mut result: Value,
-) -> Output {
+    let (app, methods, batch) = check(available, input)?;
+    let wait = (WAIT + STEP_WAIT * (methods.len() as u32).saturating_sub(1)).min(MAX_WAIT);
+    let result = match tokio::time::timeout(wait, answer).await {
+        Ok(Ok(Answer::Done(result))) => result,
+        Ok(Ok(Answer::Failed(error))) => return Err(format!("{}: {error}", app.name)),
+        Ok(Err(_)) => return Err("the reply stopped waiting for the person's page".into()),
+        Err(_) => {
+            return Err(format!(
+                "{} did not answer in {} seconds. The app works in the browser tab that started this reply: RAST must stay open there (a tab in the background may pause the app).",
+                app.name,
+                wait.as_secs()
+            ))
+        }
+    };
+    let (text, png, ran) = if batch {
+        series_text(&app.name, &methods, &result)?
+    } else {
+        let mut result = result;
+        let png = take_png(&mut result);
+        (
+            answer_text(&methods[0].0, &result),
+            png.map(|p| (0, p)),
+            true,
+        )
+    };
     let mut note = String::new();
-    let image = match take_png(&mut result) {
-        Some(png) => match picture(state, user, conversation, app, &png).await {
+    let image = match png {
+        Some((step, png)) => match picture(state, user, conversation, app, &png).await {
             Ok(file) => {
+                let from = if batch {
+                    format!(" (from method {})", step + 1)
+                } else {
+                    String::new()
+                };
                 note = format!(
-                    "The picture of {}'s window ({} KB PNG) is in the chat for the person; you get only this text.\n",
+                    "The picture of {}'s window{from} ({} KB PNG) is in the chat.\n",
                     app.name,
                     png.len() / 1024
                 );
@@ -256,16 +341,79 @@ async fn output(
         },
         None => None,
     };
-    let text = match &result {
+    let text = format!("{note}{text}");
+    if ran {
+        Ok(Output { text, image })
+    } else {
+        Err(text)
+    }
+}
+
+/// One answer as the model reads it.
+fn answer_text(method: &str, result: &Value) -> String {
+    match result {
         Value::Null => format!("{method}: done."),
         Value::String(text) => text.clone(),
         Value::Object(map) if map.is_empty() => format!("{method}: done."),
         other => serde_json::to_string_pretty(other).unwrap_or_default(),
-    };
-    Output {
-        text: format!("{note}{text}"),
-        image,
     }
+}
+
+/// A series' answers (`{"batch": [{ok, result | error}, …]}`, as the page
+/// ran them, stopping at the first failure) as the model reads them, the
+/// last picture taken (and by which method), and whether any method ran.
+fn series_text(
+    app: &str,
+    methods: &[Method],
+    result: &Value,
+) -> Result<(String, Taken, bool), String> {
+    let Some(answers) = result.get("batch").and_then(Value::as_array) else {
+        return Err(format!("{app}: the page gave no answers for the series"));
+    };
+    let mut lines = Vec::new();
+    let mut png = None;
+    let mut done = 0;
+    let mut failed = false;
+    for (n, ((method, params), answer)) in methods.iter().zip(answers).enumerate() {
+        let name = label(method, params);
+        if answer.get("ok").and_then(Value::as_bool) == Some(true) {
+            let mut result = answer.get("result").cloned().unwrap_or(Value::Null);
+            if let Some(picture) = take_png(&mut result) {
+                png = Some((n, picture));
+            }
+            let text = answer_text(method, &result);
+            let text = tools::cap(&text, MAX_STEP_CHARS, false);
+            lines.push(format!("{}. {name}: {text}", n + 1));
+            done += 1;
+        } else {
+            let error = answer
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|e| !e.is_empty())
+                .unwrap_or("the app could not do it");
+            let error: String = error.chars().take(MAX_ERROR_CHARS).collect();
+            lines.push(format!("{}. {name} failed: {error}", n + 1));
+            failed = true;
+            break;
+        }
+    }
+    let total = methods.len();
+    let head = if failed {
+        let after = total - done - 1;
+        if after > 0 {
+            format!(
+                "{app} ran {done} of {total}; the {after} after the one that failed did not run."
+            )
+        } else {
+            format!("{app} ran {done} of {total}; the last one failed.")
+        }
+    } else if done < total {
+        format!("{app} answered {done} of {total}.")
+    } else {
+        format!("{app} ran all {total}.")
+    };
+    Ok((format!("{head}\n{}", lines.join("\n")), png, done > 0))
 }
 
 /// A PNG the answer carries as base64 (taken out of it).
@@ -331,13 +479,14 @@ mod tests {
 
     #[test]
     fn only_apps_that_take_commands_are_offered() {
-        assert!(spec(&[app("files", "File Station", false)]).is_none());
+        assert!(spec(&[app("files", "File Station", false)], false).is_none());
         let apps = [
             app("files", "File Station", false),
             app("wordcraft", "WordCraft", true),
         ];
-        let spec = spec(&apps).unwrap();
+        let spec = spec(&apps, false).unwrap();
         assert_eq!(spec.name, "use_app");
+        assert!(spec.description.contains("you get only its description"));
         assert!(spec
             .description
             .ends_with("The apps:\n- wordcraft (WordCraft)"));
@@ -351,22 +500,22 @@ mod tests {
             apps: apps.to_vec(),
             ..Available::default()
         };
-        let (found, method, params) = check(
+        let (found, methods, batch) = check(
             &available,
             &json!({"app": "wordcraft", "method": "engine.execute", "params": {"command": "text.insert", "params": {"text": "Hi"}}}),
         )
         .unwrap();
         assert_eq!(
-            (found.id.as_str(), method.as_str()),
-            ("wordcraft", "engine.execute")
+            (found.id.as_str(), methods[0].0.as_str(), batch),
+            ("wordcraft", "engine.execute", false)
         );
-        assert_eq!(params["command"], "text.insert");
-        let (_, _, empty) = check(
+        assert_eq!(methods[0].1["command"], "text.insert");
+        let (_, methods, _) = check(
             &available,
             &json!({"app": "wordcraft", "method": "ui.inspect"}),
         )
         .unwrap();
-        assert_eq!(empty, json!({}));
+        assert_eq!(methods, vec![("ui.inspect".to_string(), json!({}))]);
         assert!(
             check(&available, &json!({"app": "files", "method": "ui.inspect"}))
                 .unwrap_err()
@@ -389,6 +538,101 @@ mod tests {
             &json!({"app": "wordcraft", "method": "ui.text", "params": {"text": big}})
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_series_runs_several_methods_in_one_call() {
+        let apps = [app("wordcraft", "WordCraft", true)];
+        let available = Available {
+            names: vec![tools::USE_APP],
+            apps: apps.to_vec(),
+            ..Available::default()
+        };
+        let spec = spec(&apps, true).unwrap();
+        assert!(spec.description.contains("you see it right after"));
+        assert!(spec.description.contains("up to 50 run in order"));
+        assert_eq!(spec.parameters["required"], json!(["app"]));
+
+        let input = json!({"app": "wordcraft", "calls": [
+            {"method": "engine.execute", "params": {"command": "shape.fill", "params": {"color": "red"}}},
+            {"method": "ui.screenshot"},
+        ]});
+        let (_, methods, batch) = check(&available, &input).unwrap();
+        assert!(batch);
+        assert_eq!(methods.len(), 2);
+        assert_eq!(methods[1], ("ui.screenshot".to_string(), json!({})));
+        assert!(!reads(&input));
+        assert!(reads(
+            &json!({"calls": [{"method": "document.inspect"}, {"method": "ui.screenshot"}]})
+        ));
+        assert!(!reads(&json!({"calls": []})));
+        assert!(tools::summary(tools::USE_APP, &input)
+            .ends_with("wordcraft 2 methods: engine.execute shape.fill, ui.screenshot"));
+
+        for (bad, says) in [
+            (json!({"app": "wordcraft", "calls": []}), "at least one"),
+            (json!({"app": "wordcraft", "calls": "x"}), "a list of"),
+            (
+                json!({"app": "wordcraft", "calls": [{"method": "ui.inspect"}, {"method": "bad"}]}),
+                "calls[1]",
+            ),
+            (
+                json!({"app": "wordcraft", "calls": vec![json!({"method": "ui.inspect"}); MAX_CALLS + 1]}),
+                "at most 50",
+            ),
+        ] {
+            let error = check(&available, &bad).unwrap_err();
+            assert!(error.contains(says), "{error}");
+        }
+
+        // The page's answers: every method, or up to the one that failed.
+        let png = b"\x89PNG\r\n\x1a\nimg".to_vec();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+        let three = vec![
+            (
+                "engine.execute".to_string(),
+                json!({"command": "shape.fill"}),
+            ),
+            ("ui.screenshot".to_string(), json!({})),
+            (
+                "engine.execute".to_string(),
+                json!({"command": "file.save"}),
+            ),
+        ];
+        let (text, picture, ran) = series_text(
+            "WordCraft",
+            &three,
+            &json!({"batch": [
+                {"ok": true, "result": null},
+                {"ok": true, "result": {"png": encoded, "width": 800}},
+                {"ok": true, "result": "saved"},
+            ]}),
+        )
+        .unwrap();
+        assert!(ran);
+        assert_eq!(picture, Some((1, png)));
+        assert_eq!(
+            text,
+            "WordCraft ran all 3.\n1. engine.execute shape.fill: engine.execute: done.\n2. ui.screenshot: {\n  \"width\": 800\n}\n3. engine.execute file.save: saved"
+        );
+        let (text, _, ran) = series_text(
+            "WordCraft",
+            &three,
+            &json!({"batch": [{"ok": true}, {"ok": false, "error": "no window"}]}),
+        )
+        .unwrap();
+        assert!(ran);
+        assert!(text
+            .starts_with("WordCraft ran 1 of 3; the 1 after the one that failed did not run.\n"));
+        assert!(text.ends_with("2. ui.screenshot failed: no window"));
+        let (_, _, ran) = series_text(
+            "WordCraft",
+            &three,
+            &json!({"batch": [{"ok": false, "error": "x"}]}),
+        )
+        .unwrap();
+        assert!(!ran);
+        assert!(series_text("WordCraft", &three, &json!({"x": 1})).is_err());
     }
 
     #[test]

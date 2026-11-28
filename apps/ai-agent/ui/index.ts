@@ -47,6 +47,7 @@ import {
   openAppTarget,
   toolArgument,
   useAppCall,
+  wholeMessage,
   toolBlocks,
   upsertMessage,
   type ContentBlock,
@@ -555,16 +556,30 @@ function mountAgentApp(ctx: AppContext): AppInstance {
     const call = useAppCall(block);
     // RAST 0.9.20 and later hand requests to an app's window.
     const request = (ctx.desktop as { request?: (appId: string, method: string, params?: unknown) => Promise<unknown> }).request;
+    const failure = (error: unknown) => (error instanceof Error ? error.message : String(error));
     let body: { ok: boolean; result?: unknown; error?: string };
     if (!call) {
       body = { ok: false, error: "the call names no app and method" };
     } else if (typeof request !== "function") {
       body = { ok: false, error: "this RAST hands no requests to apps yet: an administrator updates RAST to 0.9.20 or later" };
+    } else if (call.batch) {
+      // A series: in order, up to the first that fails.
+      const batch: { ok: boolean; result?: unknown; error?: string }[] = [];
+      for (const step of call.steps) {
+        try {
+          batch.push({ ok: true, result: (await request(call.app, step.method, step.params)) ?? null });
+        } catch (error) {
+          batch.push({ ok: false, error: failure(error) });
+          break;
+        }
+      }
+      body = { ok: true, result: { batch } };
     } else {
+      const [step] = call.steps;
       try {
-        body = { ok: true, result: (await request(call.app, call.method, call.params)) ?? null };
+        body = step ? { ok: true, result: (await request(call.app, step.method, step.params)) ?? null } : { ok: false, error: "the call names no method" };
       } catch (error) {
-        body = { ok: false, error: error instanceof Error ? error.message : String(error) };
+        body = { ok: false, error: failure(error) };
       }
     }
     try {
@@ -1812,6 +1827,7 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       const details = h("details", { class: "ai-tool-more", dataset: { key } });
       details.open = opened.get(key) ?? false;
       details.append(h("summary", {}, "Result"), h("pre", { class: "ai-tool-code" }, block.output));
+      if (block.outputCut) details.append(h("p", { class: "ai-tool-note small muted" }, "Shortened while the reply runs: open the chat again for all of it."));
       card.appendChild(details);
     }
     return card;
@@ -2054,13 +2070,20 @@ function mountAgentApp(ctx: AppContext): AppInstance {
       // A reply that ended reported its provider's limits.
       if (!event.running && event.message.role === "assistant") quotaRefresh.run();
       if (!current || current.conversation.id !== event.conversationId) return;
-      const known = current.messages.some((m) => m.id === event.message.id);
-      upsertMessage(current.messages, event.message);
+      const before = current.messages.find((m) => m.id === event.message.id);
+      const message = wholeMessage(before, event);
+      if (!message) {
+        // This page missed part of a long reply: read the chat again.
+        void openConversation(current.conversation.id, { quiet: true });
+        return;
+      }
+      const known = Boolean(before);
+      upsertMessage(current.messages, message);
       current.conversation.running = event.running;
       if (!event.running) current.seq = 0;
       else if (typeof event.seq === "number" && event.message.status === "streaming") current.seq = event.seq;
       if (event.message.role === "assistant") current.conversation.waiting = event.message.status === "waiting";
-      if (known) refreshMessage(event.message);
+      if (known) refreshMessage(message);
       else renderThread();
       noticeArtifacts();
       noticeOpens();

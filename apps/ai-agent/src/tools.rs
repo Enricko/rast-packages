@@ -171,6 +171,8 @@ pub struct Available {
     pub workspace: Option<super::workspace::Scope>,
     /// The RAST apps the account may open (`open_app`).
     pub apps: Vec<super::host::HostApp>,
+    /// The model reads pictures (an app window's, from `use_app`).
+    pub pictures: bool,
 }
 
 impl Available {
@@ -226,7 +228,7 @@ impl Available {
                 if *name == OPEN_APP {
                     open_app_spec(&self.apps)
                 } else if *name == USE_APP {
-                    super::use_app::spec(&self.apps)
+                    super::use_app::spec(&self.apps, self.pictures)
                 } else {
                     spec(name, self.shell, self.guarded)
                 }
@@ -602,16 +604,23 @@ pub fn summary(name: &str, input: &Value) -> String {
     }
     if name == USE_APP {
         let app = input.get("app").and_then(Value::as_str).unwrap_or("");
-        let method = input.get("method").and_then(Value::as_str).unwrap_or("");
-        let command = input
-            .pointer("/params/command")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let line: String = format!("{app} {method} {command}")
-            .trim()
-            .chars()
-            .take(300)
-            .collect();
+        let one = |call: &Value| {
+            let method = call.get("method").and_then(Value::as_str).unwrap_or("");
+            let command = call
+                .pointer("/params/command")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            format!("{method} {command}").trim().to_string()
+        };
+        let what = match input.get("calls").and_then(Value::as_array) {
+            Some(calls) => format!(
+                "{} methods: {}",
+                calls.len(),
+                calls.iter().map(one).collect::<Vec<_>>().join(", ")
+            ),
+            None => one(input),
+        };
+        let line: String = format!("{app} {what}").trim().chars().take(300).collect();
         return format!("{name}: {line}");
     }
     let key = match name {

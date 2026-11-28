@@ -1499,10 +1499,11 @@ async fn reply_job(
             .filter(|w| w.user_id == conversation.user_id),
         None => None,
     };
-    let available = tools::available(state, user)
+    let mut available = tools::available(state, user)
         .await
         .restrict(resolved.agent.as_ref().and_then(|a| a.tools.as_deref()))
         .in_workspace(workspace.as_ref().map(ai::workspace::Workspace::scope));
+    available.pictures = ai::context::sees_images(&resolved.model);
     let today = chrono::Local::now().format("%A, %-d %B %Y").to_string();
     let mut system = ai::system_prompt(resolved.agent.as_ref(), &skills, user, &today, &available);
     if let Some(scope) = &available.workspace {
@@ -1551,11 +1552,14 @@ async fn last_message(state: &Agent, conversation_id: &str) -> AppResult<Option<
     Ok(row.as_ref().map(ai::message_from_row))
 }
 
+/// Tell pages about a message: a long one by its last step only (what a
+/// decision about its calls changes).
 fn publish_message(state: &Agent, owner_id: i64, message: &ai::Message, running: bool) {
+    let live = ai::live_message(message.json(), ai::last_step_start(&message.content));
     state.host.publish_user_and_admin(
         "ai.message",
         owner_id,
-        json!({"conversationId": message.conversation_id, "message": message.json(), "running": running, "seq": 0}),
+        json!({"conversationId": message.conversation_id, "message": live, "running": running, "seq": 0}),
     );
 }
 

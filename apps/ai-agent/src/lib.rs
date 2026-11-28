@@ -34,6 +34,7 @@ pub mod accounts;
 pub mod api;
 pub mod app;
 pub mod browser;
+pub mod context;
 pub mod convert;
 pub mod files;
 pub mod guard;
@@ -81,6 +82,12 @@ pub const MAX_AGENT_SKILLS: usize = 20;
 pub const HISTORY_MESSAGES: usize = 60;
 /// Characters of earlier messages sent with each request (the newest ones).
 pub const HISTORY_CHARS: usize = 400_000;
+/// Largest live message event (RAST's host API takes event bodies up to
+/// 2 MB).
+const LIVE_MAX_BYTES: usize = 1_500_000;
+/// A message up to this size goes whole in live events (a page that missed
+/// one catches up).
+const LIVE_WHOLE_BYTES: usize = 256 * 1024;
 
 /// How hard a model thinks before it answers (per chat; none = the
 /// provider's default). See [`provider`] for how each protocol asks.
@@ -1838,6 +1845,63 @@ fn tool_result(block: &Value) -> provider::ToolResult {
     }
 }
 
+/// A message as live events carry it: whole while it is small; a long one
+/// only from block `from` on (`contentFrom`, `contentLength`: pages keep
+/// the blocks before), its long tool outputs and inputs cut (`outputCut`)
+/// when still too large. Pages that cannot place the blocks read the chat
+/// again.
+pub fn live_message(mut message: Value, from: usize) -> Value {
+    let size = |v: &Value| serde_json::to_string(v).map(|s| s.len()).unwrap_or(0);
+    if size(&message) <= LIVE_WHOLE_BYTES {
+        return message;
+    }
+    let Some(content) = message.get("content").and_then(Value::as_array).cloned() else {
+        return message;
+    };
+    let from = from.min(content.len());
+    if from > 0 {
+        message["content"] = Value::Array(content[from..].to_vec());
+        message["contentFrom"] = json!(from);
+        message["contentLength"] = json!(content.len());
+    }
+    for limit in [16_000usize, 1000] {
+        if size(&message) <= LIVE_MAX_BYTES {
+            break;
+        }
+        let Some(blocks) = message["content"].as_array_mut() else {
+            break;
+        };
+        for block in blocks.iter_mut().filter(|b| is_tool_block(b)) {
+            let cut = |text: &str| -> Option<String> {
+                (text.chars().count() > limit).then(|| text.chars().take(limit).collect())
+            };
+            if let Some(shorter) = block.get("output").and_then(Value::as_str).and_then(cut) {
+                block["output"] = json!(shorter);
+                block["outputCut"] = json!(true);
+            }
+            if let Some(input) = block.get_mut("input").and_then(Value::as_object_mut) {
+                for value in input.values_mut() {
+                    if let Some(shorter) = value.as_str().and_then(cut) {
+                        *value = json!(shorter);
+                    }
+                }
+            }
+        }
+    }
+    message
+}
+
+/// Where a message's last step starts (its words before its calls): a
+/// decision about the calls changes only the blocks from there.
+pub fn last_step_start(content: &Value) -> usize {
+    let blocks = content.as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let mut at = blocks.len();
+    while at > 0 && is_tool_block(&blocks[at - 1]) {
+        at -= 1;
+    }
+    at.saturating_sub(1)
+}
+
 /// A reply's blocks as provider turns: each step's words and calls, then
 /// the calls' results.
 pub fn turns_of(content: &Value) -> Vec<provider::Turn> {
@@ -2033,6 +2097,43 @@ pub fn system_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_events_carry_a_long_message_by_what_changed() {
+        let tool = |n: usize, output: &str| json!({"type": "tool", "id": format!("c{n}"), "name": "use_app", "status": "done", "input": {"app": "wordcraft", "text": "t".repeat(3000)}, "output": output});
+        let message =
+            |blocks: Vec<Value>| json!({"id": 9, "status": "streaming", "content": blocks});
+
+        let small = message(vec![json!({"type": "text", "text": "hi"}), tool(0, "ok")]);
+        assert_eq!(live_message(small.clone(), 1), small);
+
+        let blocks: Vec<Value> = (0..400).map(|n| tool(n, &"o".repeat(2000))).collect();
+        let live = live_message(message(blocks.clone()), 398);
+        assert_eq!(live["contentFrom"], 398);
+        assert_eq!(live["contentLength"], 400);
+        assert_eq!(live["content"].as_array().unwrap().len(), 2);
+        assert_eq!(live["content"][0], blocks[398]);
+        assert_eq!(live["status"], "streaming");
+
+        // Still too large from where it changed: long outputs are cut.
+        let big: Vec<Value> = (0..200).map(|n| tool(n, &"o".repeat(40_000))).collect();
+        let live = live_message(message(big), 0);
+        assert!(serde_json::to_string(&live).unwrap().len() <= LIVE_MAX_BYTES);
+        assert!(live.get("contentFrom").is_none());
+        assert_eq!(live["content"][0]["outputCut"], true);
+        assert_eq!(live["content"][0]["output"].as_str().unwrap().len(), 1000);
+
+        let content = json!([
+            {"type": "text", "text": "a"},
+            tool(0, "x"),
+            {"type": "text", "text": "b"},
+            tool(1, "y"),
+            tool(2, "z"),
+        ]);
+        assert_eq!(last_step_start(&content), 2);
+        assert_eq!(last_step_start(&json!([tool(0, "x")])), 0);
+        assert_eq!(last_step_start(&json!([])), 0);
+    }
 
     fn rule(
         subject: &str,
