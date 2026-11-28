@@ -1,0 +1,202 @@
+{
+  "upstream": {
+    "owner": "storytold",
+    "signingKey": "artcraft-release-signing-key.asc",
+    "signingKeyFingerprint": "2B76741B414AAD6CD33E631213A005C0B9D7C3ED",
+    "license": "Apache-2.0"
+  },
+  "apps": [
+    {
+      "package": "photocraft",
+      "name": "PhotoCraft",
+      "version": "0.23.1",
+      "repo": "photocraft",
+      "summary": "Photo editor with layers, masks and filters.",
+      "homepage": "https://getartcraft.com/apps/photocraft",
+      "defaultSize": {
+        "w": 1280,
+        "h": 820
+      }
+    },
+    {
+      "package": "pdfcraft",
+      "name": "PdfCraft",
+      "version": "0.22.0",
+      "repo": "pdfcraft",
+      "summary": "Read, annotate and edit PDF documents.",
+      "homepage": "https://getartcraft.com/apps/pdfcraft",
+      "defaultSize": {
+        "w": 1180,
+        "h": 820
+      }
+    },
+    {
+      "package": "filmcraft",
+      "name": "FilmCraft",
+      "version": "0.20.1",
+      "repo": "filmcraft",
+      "summary": "Nonlinear video editor.",
+      "homepage": "https://getartcraft.com/apps/filmcraft",
+      "defaultSize": {
+        "w": 1280,
+        "h": 820
+      }
+    },
+    {
+      "package": "wordcraft",
+      "name": "WordCraft",
+      "version": "0.19.1",
+      "repo": "wordcraft",
+      "summary": "Word processor for documents and letters.",
+      "homepage": "https://getartcraft.com/apps/wordcraft",
+      "defaultSize": {
+        "w": 1100,
+        "h": 800
+      }
+    },
+    {
+      "package": "lightcraft",
+      "name": "LightCraft",
+      "version": "0.21.1",
+      "repo": "lightcraft",
+      "summary": "Non-destructive photo developing and retouching.",
+      "homepage": "https://getartcraft.com/apps/lightcraft",
+      "defaultSize": {
+        "w": 1280,
+        "h": 820
+      }
+    },
+    {
+      "package": "vectorcraft",
+      "name": "VectorCraft",
+      "version": "0.24.1",
+      "repo": "vectorcraft",
+      "summary": "Vector illustration and graphics.",
+      "homepage": "https://getartcraft.com/apps/vectorcraft",
+      "defaultSize": {
+        "w": 1280,
+        "h": 820
+      }
+    },
+    {
+      "package": "effectcraft",
+      "name": "EffectCraft",
+      "version": "0.25.1",
+      "repo": "effectcraft",
+      "summary": "Motion graphics and compositing.",
+      "homepage": "https://getartcraft.com/apps/effectcraft",
+      "defaultSize": {
+        "w": 1280,
+        "h": 820
+      }
+    },
+    {
+      "package": "cadcraft",
+      "name": "CADCraft",
+      "version": "0.20.1",
+      "repo": "cadcraft",
+      "summary": "Computer-aided design and drafting.",
+      "homepage": "https://github.com/storytold/cadcraft",
+      "defaultSize": {
+        "w": 1280,
+        "h": 820
+      }
+    },
+    {
+      "package": "gridcraft",
+      "name": "GridCraft",
+      "version": "0.19.1",
+      "repo": "gridcraft",
+      "summary": "Spreadsheets with formulas and charts.",
+      "homepage": "https://github.com/storytold/gridcraft",
+      "defaultSize": {
+        "w": 1200,
+        "h": 800
+      }
+    },
+    {
+      "package": "figcraft",
+      "name": "FigCraft",
+      "version": "0.18.1",
+      "repo": "figcraft",
+      "summary": "Interface design and prototyping.",
+      "homepage": "https://getartcraft.com/apps/figcraft",
+      "defaultSize": {
+        "w": 1280,
+        "h": 820
+      }
+    },
+    {
+      "package": "designcraft",
+      "name": "DesignCraft",
+      "version": "0.21.1",
+      "repo": "designcraft",
+      "summary": "Page and layout design.",
+      "homepage": "https://getartcraft.com/apps/designcraft",
+      "defaultSize": {
+        "w": 1280,
+        "h": 820
+      }
+    },
+    {
+      "package": "deckcraft",
+      "name": "DeckCraft",
+      "version": "0.19.1",
+      "repo": "deckcraft",
+      "summary": "Presentations and slide shows.",
+      "homepage": "https://getartcraft.com/apps/slidecraft",
+      "defaultSize": {
+        "w": 1200,
+        "h": 800
+      }
+    },
+    {
+      "package": "soundcraft",
+      "name": "SoundCraft",
+      "version": "0.20.1",
+      "repo": "soundcraft",
+      "summary": "Digital audio workstation for recording and mixing.",
+      "homepage": "https://getartcraft.com/apps/soundcraft",
+      "defaultSize": {
+        "w": 1280,
+        "h": 820
+      }
+    },
+    {
+      "package": "texturecraft",
+      "name": "TextureCraft",
+      "version": "0.6.1",
+      "repo": "texturecraft",
+      "summary": "3D texture painting.",
+      "homepage": "https://getartcraft.com/apps/texturecraft",
+      "defaultSize": {
+        "w": 1280,
+        "h": 820
+      }
+    },
+    {
+      "package": "materialcraft",
+      "name": "MaterialCraft",
+      "version": "0.4.1",
+      "repo": "materialcraft",
+      "summary": "Node-based material designer for tileable textures.",
+      "homepage": "https://getartcraft.com/apps/materialcraft",
+      "defaultSize": {
+        "w": 1280,
+        "h": 820
+      }
+    },
+    {
+      "package": "craft-anything",
+      "name": "Craft Anything",
+      "version": "0.6.1",
+      "repo": "craft-anything",
+      "summary": "Drop a file to learn what it is, what it runs on and what made it.",
+      "homepage": "https://github.com/storytold/craft-anything",
+      "defaultSize": {
+        "w": 1100,
+        "h": 740
+      }
+    }
+  ]
+}

@@ -1,0 +1,157 @@
+name: Craft web apps
+
+# ArtCraft's Craft apps for RAST's App Center (apps/craft-web): each app's
+# upstream web build (WebAssembly), checked against upstream's signed
+# SHA256SUMS.txt and GitHub's asset digest, becomes package `<id>` released
+# here as `<id>-v<version>` (one archive per target: the same files, a web
+# page runs anywhere). RAST shows it as a web page window, sandboxed in an
+# origin of its own. The catalog workflow finds these releases
+# (packages.<id>.releaseRepos), verifies them and lists them.
+#
+# Release one app: set its `version` in apps/craft-web/crafts.json, then push
+# the tag `<id>-v<that version>` (or run this workflow by hand for <id>).
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "photocraft-v*"
+      - "pdfcraft-v*"
+      - "filmcraft-v*"
+      - "wordcraft-v*"
+      - "lightcraft-v*"
+      - "vectorcraft-v*"
+      - "effectcraft-v*"
+      - "cadcraft-v*"
+      - "gridcraft-v*"
+      - "figcraft-v*"
+      - "designcraft-v*"
+      - "deckcraft-v*"
+      - "soundcraft-v*"
+      - "texturecraft-v*"
+      - "materialcraft-v*"
+      - "craft-anything-v*"
+    paths:
+      - "apps/craft-web/**"
+      - "icons/*.png"
+      - ".github/workflows/craft-web.yml"
+  pull_request:
+    paths:
+      - "apps/craft-web/**"
+      - "icons/*.png"
+      - ".github/workflows/craft-web.yml"
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "The app to release (its version comes from crafts.json)"
+        required: true
+        type: choice
+        options:
+          - photocraft
+          - pdfcraft
+          - filmcraft
+          - wordcraft
+          - lightcraft
+          - vectorcraft
+          - effectcraft
+          - cadcraft
+          - gridcraft
+          - figcraft
+          - designcraft
+          - deckcraft
+          - soundcraft
+          - texturecraft
+          - materialcraft
+          - craft-anything
+
+permissions:
+  contents: read
+
+concurrency:
+  group: craft-web-${{ github.ref }}-${{ inputs.package }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.what.outputs.release }}
+      package: ${{ steps.what.outputs.package }}
+      version: ${{ steps.what.outputs.version }}
+      name: ${{ steps.what.outputs.name }}
+      repo: ${{ steps.what.outputs.repo }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: crafts.json, the pinned key and the icons
+        run: python3 -I apps/craft-web/package.py check
+      - name: What to release
+        id: what
+        env:
+          INPUT_PACKAGE: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            package="$INPUT_PACKAGE"
+            wanted=""
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            package="${GITHUB_REF_NAME%-v*}"
+            wanted="${GITHUB_REF_NAME##*-v}"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          read -r version repo name < <(python3 -I -c '
+          import json, sys
+          apps = {a["package"]: a for a in json.load(open("apps/craft-web/crafts.json"))["apps"]}
+          app = apps.get(sys.argv[1])
+          if app is None:
+              sys.exit(f"{sys.argv[1]} is not in crafts.json")
+          print(app["version"], app["repo"], app["name"])
+          ' "$package")
+          if [[ -n "$wanted" && "$wanted" != "$version" ]]; then
+            echo "crafts.json says $package $version, the tag is $wanted" >&2
+            exit 1
+          fi
+          {
+            echo "release=true"
+            echo "package=$package"
+            echo "version=$version"
+            echo "name=$name"
+            echo "repo=$repo"
+          } >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Package and publish
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download, verify and package the upstream web build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I apps/craft-web/package.py build "${{ needs.check.outputs.package }}" dist
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+      - name: Publish (not marked latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          package="${{ needs.check.outputs.package }}"
+          version="${{ needs.check.outputs.version }}"
+          name="${{ needs.check.outputs.name }}"
+          repo="${{ needs.check.outputs.repo }}"
+          tag="$package-v$version"
+          notes="$name $version for RAST's App Center (package $package): ArtCraft's web build, unmodified, from https://github.com/storytold/$repo/releases/tag/v$version (verified against upstream's signed SHA256SUMS.txt). Installed and updated from App Center."
+          gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "$name $version" --notes "$notes" --latest=false
