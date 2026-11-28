@@ -1,7 +1,7 @@
 // What is new in each AI Agent version, newest first. The window shows the
 // versions an account has not seen yet, once (POST /api/ai/whats-new). A
-// release adds its entry here with the version in src/ai/app.rs (a Rust
-// test checks the newest entry matches it).
+// release adds its entry here with the version in src/app.rs (a Rust test
+// checks the newest entry matches it).
 
 export interface Release {
   version: string;
@@ -10,6 +10,15 @@ export interface Release {
 }
 
 export const WHATS_NEW: Release[] = [
+  {
+    version: "1.4.0",
+    date: "2026-11-28",
+    items: [
+      "A viewer beside the chat: pictures, videos and PDFs in a chat open on the right, with Download, Open in a new tab and Show in File Station. Click a link or a file path in an answer, View on a file step, or a picture or PDF you sent.",
+      "When a provider times out or is busy, the reply tries again every 30 seconds, up to 10 times, with a countdown and Retry now.",
+      "AI Agent now lives in its own package repository, so its updates come from App Center on their own.",
+    ],
+  },
   {
     version: "1.3.0",
     date: "2026-11-27",

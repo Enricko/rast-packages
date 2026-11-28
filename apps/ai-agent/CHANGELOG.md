@@ -7,6 +7,8 @@ to people is also in `ui/whats-new.ts`, shown once per version.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-28
+
 ### Added
 
 - **Replies try again after a passing failure.** When the provider times

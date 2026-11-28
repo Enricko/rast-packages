@@ -1,6 +1,6 @@
 [package]
 name = "rast-ai-agent"
-version = "1.3.0"
+version = "1.4.0"
 edition = "2021"
 rust-version = "1.94"
 description = "AI Agent: RAST's agent harness, an App Center app package"
@@ -20,7 +20,7 @@ path = "src/main.rs"
 # RAST's library: accounts, the audit log, the sandbox, the app host. Pinned
 # to the RAST commit this AI Agent builds against (RAST_REV in the workflow
 # reads it from here).
-rast = { git = "https://github.com/Enricko/rast", rev = "9a3b28007f07f37adc10f41ab0b1427ac2506ffa" }
+rast = { git = "https://github.com/Enricko/rast", rev = "6d716714e7ef502d33048d294338b6aade853561" }
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "sync", "time", "signal", "process"] }
 tokio-util = { version = "0.7", features = ["io"] }
